@@ -1,6 +1,6 @@
 spring:
   application:
-    name: todogi-auth
+    name: auth-gateway
   security:
     oauth2:
       resourceserver:
