@@ -15,5 +15,20 @@ keycloak:
     client-id: ${KEYCLOAK_ADMIN_CLIENT_ID}
     client-secret: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
 
+otel:
+  exporter:
+    otlp:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT}
+      protocol: ${OTEL_EXPORTER_OTLP_PROTOCOL}
+  resource:
+    attributes:
+      service.name: ${OTEL_RESOURCE_SERVICE_NAME}
+      service.namespace: ${OTEL_RESOURCE_SERVICE_NAMESPACE}
+  traces:
+    exporter: otlp
+  metrics:
+    exporter: none
+  logs:
+    exporter: none
 
 
