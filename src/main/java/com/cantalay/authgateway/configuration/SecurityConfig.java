@@ -51,7 +51,8 @@ public class SecurityConfig {
         config.setAllowedOrigins(List.of(
                 "http://localhost:3000",
                 "http://localhost:5173",
-                "http://localhost:8081"
+                "http://localhost:8081",
+                "https://todogi.singlestranger.com"
         ));
 
         config.setAllowedMethods(List.of(
