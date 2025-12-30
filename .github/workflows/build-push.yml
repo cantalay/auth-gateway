@@ -31,6 +31,9 @@ jobs:
       # 3️⃣ Docker buildx kur
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
 
       # 4️⃣ GHCR login (token otomatik)
       - name: Login to GitHub Container Registry
@@ -50,6 +53,8 @@ jobs:
           tags: |
             ghcr.io/cantalay/auth-gateway:${{ steps.version.outputs.version }}
             ghcr.io/cantalay/auth-gateway:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       # 6️⃣ Versiyon commit et
       - name: Commit version bump
