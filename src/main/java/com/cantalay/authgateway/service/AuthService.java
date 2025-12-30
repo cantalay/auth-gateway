@@ -7,6 +7,8 @@ import com.cantalay.authgateway.exception.AuthError;
 import com.cantalay.authgateway.exception.BaseAuthException;
 import feign.FeignException;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
@@ -19,6 +21,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class AuthService {
 
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
     private final AuthAdminService adminService;
     private final KeycloakClient keycloakClient;
     private final KeycloakAdminClient keycloakAdminClient;
@@ -105,6 +108,36 @@ public class AuthService {
                     "Bearer " + token,
                     payload
             );
+
+            // Get user ID by email to send verification email
+            List<Map<String, Object>> users = keycloakAdminClient.getUsersByEmail(
+                    realm,
+                    "Bearer " + token,
+                    request.email(),
+                    true
+            );
+
+            if (!users.isEmpty()) {
+                String userId = (String) users.get(0).get("id");
+                log.info("Sending verification email to user: {} (userId: {})", request.email(), userId);
+                
+                // Send verification email
+                try {
+                    keycloakAdminClient.sendVerificationEmail(
+                            realm,
+                            userId,
+                            "Bearer " + token
+                    );
+                    log.info("Verification email sent successfully to: {}", request.email());
+                } catch (FeignException e) {
+                    log.error("Failed to send verification email to: {} (userId: {}). Error: {}", 
+                            request.email(), userId, e.getMessage());
+                    // Log error but don't fail registration if email sending fails
+                    // User can request verification email later
+                }
+            } else {
+                log.warn("User created but could not be found by email to send verification: {}", request.email());
+            }
         } catch (FeignException.Conflict e) {
             throw new BaseAuthException(AuthError.USER_ALREADY_EXISTS);
         } catch (FeignException.Forbidden e) {
