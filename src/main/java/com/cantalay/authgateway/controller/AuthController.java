@@ -4,6 +4,8 @@ import com.cantalay.authgateway.domain.*;
 import com.cantalay.authgateway.service.AuthService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -14,11 +16,15 @@ import org.springframework.web.bind.annotation.*;
 @RequiredArgsConstructor
 public class AuthController {
 
+    private static final Logger log = LoggerFactory.getLogger(AuthController.class);
     private final AuthService authService;
 
     @PostMapping("/login")
     public TokenResponseDto login(@RequestBody LoginRequest request) {
-        return authService.login(request);
+        log.info("Login attempt for email: {}", request.email());
+        TokenResponseDto response = authService.login(request);
+        log.info("Login successful for email: {}", request.email());
+        return response;
     }
 
     @PostMapping("/refresh")
@@ -29,26 +35,37 @@ public class AuthController {
     @PostMapping("/logout")
     public void logout(@AuthenticationPrincipal Jwt jwt,
                        @RequestBody LogoutRequest request) {
+        String subject = jwt.getSubject();
+        log.info("Logout request for user: {}", subject);
         authService.logout(request);
+        log.info("Logout successful for user: {}", subject);
     }
 
     @GetMapping("/me")
     public UserMeResponse me(@AuthenticationPrincipal Jwt jwt) {
-        return authService.getMe(jwt.getTokenValue());
+        String subject = jwt.getSubject();
+        log.info("Get user info request for user: {}", subject);
+        UserMeResponse response = authService.getMe(jwt.getTokenValue());
+        log.info("User info retrieved successfully for user: {}", subject);
+        return response;
     }
 
     @PostMapping("/register")
     @ResponseStatus(HttpStatus.CREATED)
     public void register(@Valid @RequestBody RegisterRequest request) {
+        log.info("Registration attempt for email: {}", request.email());
         authService.register(request);
+        log.info("Registration successful for email: {}", request.email());
     }
 
     @PatchMapping("/me")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void updateProfile(@AuthenticationPrincipal Jwt jwt,
                               @Valid @RequestBody UpdateProfileRequest request) {
-
-        authService.updateProfile(jwt.getSubject(), request);
+        String subject = jwt.getSubject();
+        log.info("Profile update request for user: {}", subject);
+        authService.updateProfile(subject, request);
+        log.info("Profile update successful for user: {}", subject);
     }
 
     /* =========================
@@ -58,9 +75,11 @@ public class AuthController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void changePassword(@AuthenticationPrincipal Jwt jwt,
                                @Valid @RequestBody ChangePasswordRequest request) {
-
         String email = jwt.getClaimAsString("email");
-        authService.changePassword(email, jwt.getSubject(), request);
+        String subject = jwt.getSubject();
+        log.info("Password change request for user: {} (email: {})", subject, email);
+        authService.changePassword(email, subject, request);
+        log.info("Password change successful for user: {} (email: {})", subject, email);
     }
 
     /*
@@ -71,7 +90,9 @@ public class AuthController {
     @PostMapping("/social")
     public TokenResponseDto socialLogin(
             @Valid @RequestBody SocialLoginRequest request) {
-
-        return authService.socialLogin(request);
+        log.info("Social login attempt with redirectUri: {}", request.redirectUri());
+        TokenResponseDto response = authService.socialLogin(request);
+        log.info("Social login successful with redirectUri: {}", request.redirectUri());
+        return response;
     }
 }
