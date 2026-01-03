@@ -110,7 +110,7 @@ public class AuthService {
             );
 
             // Get user ID by email to send verification email
-            List<Map<String, Object>> users = keycloakAdminClient.getUsersByEmail(
+            List<KeycloakUserDto> users = keycloakAdminClient.getUsersByEmail(
                     realm,
                     "Bearer " + token,
                     request.email(),
@@ -118,7 +118,8 @@ public class AuthService {
             );
 
             if (!users.isEmpty()) {
-                String userId = (String) users.get(0).get("id");
+                KeycloakUserDto user = users.get(0);
+                String userId = user.id();
                 log.info("Sending verification email to user: {} (userId: {})", request.email(), userId);
                 
                 // Send verification email

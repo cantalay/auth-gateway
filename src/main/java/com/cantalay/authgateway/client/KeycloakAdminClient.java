@@ -1,5 +1,6 @@
 package com.cantalay.authgateway.client;
 
+import com.cantalay.authgateway.domain.KeycloakUserDto;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -27,7 +28,7 @@ public interface KeycloakAdminClient {
             value = "/admin/realms/{realm}/users",
             produces = MediaType.APPLICATION_JSON_VALUE
     )
-    List<Map<String, Object>> getUsersByEmail(
+    List<KeycloakUserDto> getUsersByEmail(
             @PathVariable String realm,
             @RequestHeader("Authorization") String authorization,
             @RequestParam("email") String email,
