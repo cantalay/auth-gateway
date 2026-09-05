@@ -1,12 +1,16 @@
-FROM --platform=$BUILDPLATFORM maven:3.9.6-eclipse-temurin-17 AS build
+FROM eclipse-temurin:17-jdk-alpine AS build
 WORKDIR /build
-COPY pom.xml .
+COPY .mvn .mvn
+COPY mvnw pom.xml ./
+RUN ./mvnw --batch-mode --no-transfer-progress dependency:go-offline
 COPY src ./src
-RUN mvn clean package -DskipTests
+RUN ./mvnw --batch-mode --no-transfer-progress package -DskipTests
 
-FROM eclipse-temurin:17-jre
+FROM eclipse-temurin:17-jre-alpine
+RUN addgroup -S -g 10001 app && adduser -S -D -H -u 10001 -G app app
 WORKDIR /app
-COPY --from=build /build/target/*.jar app.jar
+COPY --chown=10001:10001 --from=build /build/target/*.jar app.jar
 
+USER 10001:10001
 EXPOSE 8080
 ENTRYPOINT ["java","-jar","/app/app.jar"]

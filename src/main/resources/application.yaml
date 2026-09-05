@@ -22,8 +22,8 @@ otel:
       protocol: ${OTEL_EXPORTER_OTLP_PROTOCOL}
   resource:
     attributes:
-      service.name: ${OTEL_RESOURCE_SERVICE_NAME}
-      service.namespace: ${OTEL_RESOURCE_SERVICE_NAMESPACE}
+      service.name: ${OTEL_SERVICE_NAME:auth-gateway}
+      service.namespace: ${POD_NAMESPACE:applications}
   traces:
     exporter: otlp
   metrics:
@@ -31,4 +31,12 @@ otel:
   logs:
     exporter: otlp
 
+management:
+  endpoint:
+    health:
+      show-details: never
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
 

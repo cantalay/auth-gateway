@@ -2,6 +2,7 @@ package com.cantalay.authgateway.configuration;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -17,6 +18,12 @@ import java.util.List;
 @Configuration
 @EnableMethodSecurity
 public class SecurityConfig {
+    private final List<String> allowedOrigins;
+
+    SecurityConfig(@Value("#{'${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:5173,http://localhost:8081,https://todogi.singlestranger.com,https://www.todogi.singlestranger.com}'.split(',')}") List<String> allowedOrigins) {
+        this.allowedOrigins = allowedOrigins.stream().map(String::trim).toList();
+    }
+
     @Bean
     SecurityFilterChain security(HttpSecurity http) throws Exception {
         http
@@ -32,7 +39,10 @@ public class SecurityConfig {
                                 "/auth/refresh",
                                 "/auth/forgot-password",
                                 "/auth/reset-password",
-                                "/auth/social/**"
+                                "/auth/social/**",
+                                "/actuator/health",
+                                "/actuator/info",
+                                "/actuator/prometheus"
                         ).permitAll()
                         .anyRequest().authenticated()
                 )
@@ -47,13 +57,7 @@ public class SecurityConfig {
     CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
 
-        // 🔴 Localhost frontend için
-        config.setAllowedOrigins(List.of(
-                "http://localhost:3000",
-                "http://localhost:5173",
-                "http://localhost:8081",
-                "https://todogi.singlestranger.com"
-        ));
+        config.setAllowedOrigins(allowedOrigins);
 
         config.setAllowedMethods(List.of(
                 "GET", "POST", "PUT", "DELETE", "OPTIONS"
@@ -78,4 +82,3 @@ public class SecurityConfig {
         return source;
     }
 }
-
