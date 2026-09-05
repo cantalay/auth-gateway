@@ -17,8 +17,6 @@ jobs:
     with:
       java-version: "17"
       build-tool: maven
-      image-name: ghcr.io/cantalay/auth-gateway
+      image-name: ghcr.io/cantalay/todogi-auth-gateway
       push-image: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       upload-sarif: false
-    secrets:
-      GHCR_TOKEN: ${{ secrets.GHCR_PAT }}
