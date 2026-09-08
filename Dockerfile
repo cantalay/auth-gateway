@@ -7,7 +7,9 @@ COPY src ./src
 RUN ./mvnw --batch-mode --no-transfer-progress package -DskipTests
 
 FROM eclipse-temurin:17-jre-alpine
-RUN addgroup -S -g 10001 app && adduser -S -D -H -u 10001 -G app app
+RUN apk upgrade --no-cache \
+    && addgroup -S -g 10001 app \
+    && adduser -S -D -H -u 10001 -G app app
 WORKDIR /app
 COPY --chown=10001:10001 --from=build /build/target/*.jar app.jar
 
