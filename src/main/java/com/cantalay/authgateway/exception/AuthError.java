@@ -22,7 +22,13 @@ public final class AuthError {
     public static final Error AUTH_SERVICE_UNAVAILABLE =
             new Error(HttpStatus.SERVICE_UNAVAILABLE, "Authentication service unavailable.");
     public static final Error AUTH_DISABLED_ACCOUNT =
-            new Error(HttpStatus.SERVICE_UNAVAILABLE, "User email validation required.");
+            new Error(HttpStatus.FORBIDDEN, "User email validation required.");
+    public static final Error REALM_NOT_FOUND =
+            new Error(HttpStatus.NOT_FOUND, "Unknown realm.");
+    public static final Error REALM_MISMATCH =
+            new Error(HttpStatus.FORBIDDEN, "Token does not belong to this realm.");
+    public static final Error REGISTRATION_REJECTED =
+            new Error(HttpStatus.BAD_REQUEST, "Registration data was rejected.");
 
     /* =======================
        INNER TYPE

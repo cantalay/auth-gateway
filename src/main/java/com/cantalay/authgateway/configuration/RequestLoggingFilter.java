@@ -23,7 +23,10 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
 
     private static final int MAX_PAYLOAD_LENGTH = 1000;
     private static final String[] SENSITIVE_HEADERS = {"authorization", "cookie", "set-cookie"};
-    private static final String[] SENSITIVE_FIELDS = {"password", "token", "secret", "apiKey"};
+    private static final java.util.regex.Pattern EMAIL = java.util.regex.Pattern.compile(
+            "([A-Za-z0-9])[A-Za-z0-9._%+-]*@");
+    private static final java.util.regex.Pattern SENSITIVE_JSON_FIELD = java.util.regex.Pattern.compile(
+            "\"([^\"]*(?i:password|token|secret|api_?key)[^\"]*)\"\\s*:\\s*\"[^\"]*\"?");
 
     @Override
     protected void doFilterInternal(
@@ -210,14 +213,11 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
             return null;
         }
         
-        String masked = data;
-        for (String field : SENSITIVE_FIELDS) {
-            // Mask password, token, etc. in JSON
-            masked = masked.replaceAll(
-                    "\"" + field + "\"\\s*:\\s*\"[^\"]*\"",
-                    "\"" + field + "\":\"***MASKED***\""
-            );
-        }
+        // Mask every JSON string field whose name mentions a password, token, secret or API key
+        // (access_token, refreshToken, currentPassword, client_secret, ...).
+        String masked = SENSITIVE_JSON_FIELD.matcher(data).replaceAll("\"$1\":\"***MASKED***\"");
+        // Personal data: keep only the first character of email local parts.
+        masked = EMAIL.matcher(masked).replaceAll("$1***@");
         
         return masked;
     }
