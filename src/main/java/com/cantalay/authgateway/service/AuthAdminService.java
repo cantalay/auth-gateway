@@ -2,8 +2,8 @@ package com.cantalay.authgateway.service;
 
 import com.cantalay.authgateway.client.KeycloakClient;
 import com.cantalay.authgateway.domain.TokenResponseDto;
+import com.cantalay.authgateway.realm.RealmConfig;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -12,25 +12,16 @@ import org.springframework.util.MultiValueMap;
 @RequiredArgsConstructor
 public class AuthAdminService {
 
-    @Value("${keycloak.realm}")
-    private String realm;
-
-    @Value("${keycloak.admin.client-id}")
-    private String clientId;
-
-    @Value("${keycloak.admin.client-secret}")
-    private String clientSecret;
-
     private final KeycloakClient keycloakClient;
 
-    public String getAdminAccessToken() {
+    public String getAdminAccessToken(RealmConfig realm) {
 
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
         form.add("grant_type", "client_credentials");
-        form.add("client_id", clientId);
-        form.add("client_secret", clientSecret);
+        form.add("client_id", realm.adminClientId());
+        form.add("client_secret", realm.adminClientSecret());
 
-        TokenResponseDto resp = keycloakClient.token(realm, form);
+        TokenResponseDto resp = keycloakClient.token(realm.name(), form);
         return resp.accessToken();
     }
 }

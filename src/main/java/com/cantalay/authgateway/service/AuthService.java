@@ -5,17 +5,20 @@ import com.cantalay.authgateway.client.KeycloakClient;
 import com.cantalay.authgateway.domain.*;
 import com.cantalay.authgateway.exception.AuthError;
 import com.cantalay.authgateway.exception.BaseAuthException;
+import com.cantalay.authgateway.realm.KeycloakErrors;
+import com.cantalay.authgateway.realm.RealmConfig;
 import feign.FeignException;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 
 import java.util.List;
 import java.util.Map;
+
+import static com.cantalay.authgateway.realm.KeycloakErrors.maskEmail;
 
 @Service
 @RequiredArgsConstructor
@@ -26,65 +29,61 @@ public class AuthService {
     private final KeycloakClient keycloakClient;
     private final KeycloakAdminClient keycloakAdminClient;
 
-    @Value("${keycloak.client-id}")
-    private String clientId;
-
-    @Value("${keycloak.realm}")
-    private String realm;
-
-    public TokenResponseDto login(LoginRequest request) {
+    public TokenResponseDto login(RealmConfig realm, LoginRequest request) {
 
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
         form.add("grant_type", "password");
-        form.add("client_id", clientId);
+        form.add("client_id", realm.clientId());
         form.add("username", request.email());
         form.add("password", request.password());
         form.add("scope", "openid profile email");
 
         try {
-            return keycloakClient.token(realm, form);
-        } catch (FeignException.BadRequest e) {
-            throw new BaseAuthException(AuthError.AUTH_DISABLED_ACCOUNT);
-        } catch (FeignException.Unauthorized e) {
-            throw new BaseAuthException(AuthError.INVALID_CREDENTIALS);
+            return keycloakClient.token(realm.name(), form);
+        } catch (FeignException.BadRequest | FeignException.Unauthorized e) {
+            throw passwordGrantError(realm, e);
         } catch (FeignException e) {
             throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
         }
     }
 
-    public TokenResponseDto refresh(RefreshRequest request) {
+    public TokenResponseDto refresh(RealmConfig realm, RefreshRequest request) {
 
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
         form.add("grant_type", "refresh_token");
-        form.add("client_id", clientId);
+        form.add("client_id", realm.clientId());
         form.add("refresh_token", request.refreshToken());
         form.add("scope", "openid profile email");
 
         try {
-            return keycloakClient.token(realm, form);
-        } catch (FeignException.Unauthorized e) {
+            return keycloakClient.token(realm.name(), form);
+        } catch (FeignException.BadRequest | FeignException.Unauthorized e) {
+            if (KeycloakErrors.isClientMisconfigured(e)) {
+                log.error("Keycloak client {} in realm {} rejected refresh_token grant", realm.clientId(), realm.name());
+                throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
+            }
             throw new BaseAuthException(AuthError.TOKEN_INVALID_OR_EXPIRED);
         } catch (FeignException e) {
             throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
         }
     }
 
-    public void logout(LogoutRequest request) {
+    public void logout(RealmConfig realm, LogoutRequest request) {
 
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
-        form.add("client_id", clientId);
+        form.add("client_id", realm.clientId());
         form.add("refresh_token", request.refreshToken());
 
         try {
-            keycloakClient.logout(realm, form);
+            keycloakClient.logout(realm.name(), form);
         } catch (FeignException e) {
             throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
         }
     }
 
-    public void register(RegisterRequest request) {
+    public void register(RealmConfig realm, RegisterRequest request) {
 
-        String token = adminService.getAdminAccessToken();
+        String token = adminService.getAdminAccessToken(realm);
 
         Map<String, Object> payload = Map.of(
                 "username", request.email(),
@@ -104,14 +103,14 @@ public class AuthService {
 
         try {
             keycloakAdminClient.createUser(
-                    realm,
+                    realm.name(),
                     "Bearer " + token,
                     payload
             );
 
             // Get user ID by email to send verification email
             List<KeycloakUserDto> users = keycloakAdminClient.getUsersByEmail(
-                    realm,
+                    realm.name(),
                     "Bearer " + token,
                     request.email(),
                     true
@@ -120,27 +119,31 @@ public class AuthService {
             if (!users.isEmpty()) {
                 KeycloakUserDto user = users.get(0);
                 String userId = user.id();
-                log.info("Sending verification email to user: {} (userId: {})", request.email(), userId);
-                
+                log.info("Sending verification email in realm {} to user {}", realm.name(), userId);
+
                 // Send verification email
                 try {
                     keycloakAdminClient.sendVerificationEmail(
-                            realm,
+                            realm.name(),
                             userId,
                             "Bearer " + token
                     );
-                    log.info("Verification email sent successfully to: {}", request.email());
+                    log.info("Verification email sent in realm {} to user {}", realm.name(), userId);
                 } catch (FeignException e) {
-                    log.error("Failed to send verification email to: {} (userId: {}). Error: {}", 
-                            request.email(), userId, e.getMessage());
+                    log.error("Failed to send verification email in realm {} to user {}: HTTP {}",
+                            realm.name(), userId, e.status());
                     // Log error but don't fail registration if email sending fails
                     // User can request verification email later
                 }
             } else {
-                log.warn("User created but could not be found by email to send verification: {}", request.email());
+                log.warn("User created in realm {} but could not be found by email {}", realm.name(), maskEmail(request.email()));
             }
         } catch (FeignException.Conflict e) {
             throw new BaseAuthException(AuthError.USER_ALREADY_EXISTS);
+        } catch (FeignException.BadRequest e) {
+            throw new BaseAuthException(KeycloakErrors.isPasswordPolicyViolation(e)
+                    ? AuthError.PASSWORD_POLICY_VIOLATION
+                    : AuthError.REGISTRATION_REJECTED);
         } catch (FeignException.Forbidden e) {
             throw new BaseAuthException(AuthError.FORBIDDEN_OPERATION);
         } catch (FeignException e) {
@@ -148,19 +151,13 @@ public class AuthService {
         }
     }
 
-    public void updateProfile(String userId, UpdateProfileRequest request) {
+    public void updateProfile(RealmConfig realm, String userId, UpdateProfileRequest request) {
 
-        String token = adminService.getAdminAccessToken();
-
-        Map<String, Object> payload = Map.of(
-                "firstName", request.firstName(),
-                "lastName", request.lastName()
-        );
-
+        String token = adminService.getAdminAccessToken(realm);
 
         try {
             keycloakAdminClient.updateUser(
-                    realm,
+                    realm.name(),
                     userId,
                     "Bearer " + token,
                     Map.of(
@@ -175,25 +172,20 @@ public class AuthService {
         }
     }
 
-    public void changePassword(String userEmail,
+    public void changePassword(RealmConfig realm,
+                               String userEmail,
                                String userId,
                                ChangePasswordRequest request) {
 
         // 1️⃣ Mevcut şifre doğru mu? (login ile doğrula)
-        verifyPassword(userEmail, request.currentPassword());
+        verifyPassword(realm, userEmail, request.currentPassword());
 
         // 2️⃣ Admin API ile yeni şifre set et
-        String token = adminService.getAdminAccessToken();
-
-        Map<String, Object> payload = Map.of(
-                "type", "password",
-                "value", request.newPassword(),
-                "temporary", false
-        );
+        String token = adminService.getAdminAccessToken(realm);
 
         try {
             keycloakAdminClient.resetPassword(
-                    realm,
+                    realm.name(),
                     userId,
                     "Bearer " + token,
                     Map.of(
@@ -211,18 +203,22 @@ public class AuthService {
         }
     }
 
-    public void verifyPassword(String email, String password) {
+    public void verifyPassword(RealmConfig realm, String email, String password) {
 
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
         form.add("grant_type", "password");
-        form.add("client_id", clientId);
+        form.add("client_id", realm.clientId());
         form.add("username", email);
         form.add("password", password);
         form.add("scope", "openid profile email");
 
         try {
-            keycloakClient.token(realm, form);
-        } catch (FeignException.Unauthorized e) {
+            keycloakClient.token(realm.name(), form);
+        } catch (FeignException.BadRequest | FeignException.Unauthorized e) {
+            if (KeycloakErrors.isClientMisconfigured(e)) {
+                log.error("Keycloak client {} in realm {} rejected password grant", realm.clientId(), realm.name());
+                throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
+            }
             throw new BaseAuthException(AuthError.CURRENT_PASSWORD_INVALID);
         } catch (FeignException e) {
             throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
@@ -230,11 +226,11 @@ public class AuthService {
 
     }
 
-    public UserMeResponse getMe(String accessToken) {
+    public UserMeResponse getMe(RealmConfig realm, String accessToken) {
 
         try {
             return keycloakClient.userInfo(
-                    realm,
+                    realm.name(),
                     "Bearer " + accessToken
             );
         } catch (FeignException.Unauthorized e) {
@@ -246,16 +242,16 @@ public class AuthService {
         }
     }
 
-    public TokenResponseDto socialLogin(SocialLoginRequest request) {
+    public TokenResponseDto socialLogin(RealmConfig realm, SocialLoginRequest request) {
 
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
         form.add("grant_type", "authorization_code");
-        form.add("client_id", clientId);
+        form.add("client_id", realm.clientId());
         form.add("code", request.code());
         form.add("redirect_uri", request.redirectUri());
 
         try {
-            return keycloakClient.token(realm, form);
+            return keycloakClient.token(realm.name(), form);
 
         } catch (FeignException.BadRequest e) {
             // invalid_grant, expired code, redirect mismatch
@@ -267,5 +263,16 @@ public class AuthService {
         } catch (FeignException e) {
             throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
         }
+    }
+
+    private BaseAuthException passwordGrantError(RealmConfig realm, FeignException e) {
+        if (KeycloakErrors.isClientMisconfigured(e)) {
+            log.error("Keycloak client {} in realm {} rejected password grant (HTTP {})", realm.clientId(), realm.name(), e.status());
+            return new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
+        }
+        if (KeycloakErrors.isAccountNotUsable(e)) {
+            return new BaseAuthException(AuthError.AUTH_DISABLED_ACCOUNT);
+        }
+        return new BaseAuthException(AuthError.INVALID_CREDENTIALS);
     }
 }

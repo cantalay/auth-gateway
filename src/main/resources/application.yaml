@@ -1,16 +1,13 @@
 spring:
   application:
     name: auth-gateway
-  security:
-    oauth2:
-      resourceserver:
-        jwt:
-          issuer-uri: ${KEYCLOAK_ISSUER_URI}
 
 keycloak:
   base-url: ${KEYCLOAK_BASE_URL}
+  # Default realm, served at /auth/* and /auth/{realm}/*. More realms: gateway.realms (GATEWAY_REALMS_<REALM>_*).
   realm: ${KEYCLOAK_REALM}
-  client-id: auth
+  issuer-uri: ${KEYCLOAK_ISSUER_URI:}
+  client-id: ${KEYCLOAK_CLIENT_ID:auth}
   admin:
     client-id: ${KEYCLOAK_ADMIN_CLIENT_ID}
     client-secret: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
