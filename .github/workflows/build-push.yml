@@ -13,10 +13,23 @@ permissions:
 
 jobs:
   java:
-    uses: cantalay/talay-workflows/.github/workflows/java.yaml@107e3e43dee30ea1b4874c7bc150f90769b55efc
+    uses: cantalay/talay-workflows/.github/workflows/java.yaml@3c9275c808685fcb39623f2563020b4f25abc967
     with:
       java-version: "17"
       build-tool: maven
       image-name: ghcr.io/cantalay/todogi-auth-gateway
       push-image: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       upload-sarif: false
+
+  promote:
+    needs: java
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: cantalay/talay-workflows/.github/workflows/promote-image.yaml@3c9275c808685fcb39623f2563020b4f25abc967
+    with:
+      values-files: |
+        apps/prod/todogi/auth-gateway/values.yaml
+      image-tag: ${{ needs.java.outputs.image-tag }}
+      image-digest: ${{ needs.java.outputs.image-digest }}
+    secrets:
+      APP_ID: ${{ secrets.TALAY_PROMOTER_APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.TALAY_PROMOTER_PRIVATE_KEY }}
