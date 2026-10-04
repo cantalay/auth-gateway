@@ -11,7 +11,8 @@ Her endpoint realm'li (`/auth/{realm}/...`) ve varsayılan realm için eski (`/a
 | --- | --- | --- | --- |
 | POST | `/auth/{realm}/login` | — | `{email, password}` → Keycloak token yanıtı |
 | POST | `/auth/{realm}/refresh` | — | `{refreshToken}` → yeni token |
-| POST | `/auth/{realm}/register` | — | `{email, password, firstName, lastName}` → 201 |
+| POST | `/auth/{realm}/register` | — | `{email, password, firstName, lastName}` → 201; Keycloak doğrulama maili + hoşgeldin maili |
+| POST | `/auth/{realm}/resend-verification` | — | `{email}` → her zaman 202 (adresin kayıtlı olup olmadığını açığa vurmaz) |
 | POST | `/auth/{realm}/social` | — | `{code, redirectUri}` → token (kc_idp_hint ile alınan code) |
 | POST | `/auth/{realm}/logout` | Bearer | `{refreshToken}` |
 | GET | `/auth/{realm}/me` | Bearer | Kullanıcı bilgisi |
@@ -46,5 +47,18 @@ Ek realm'ler, realm başına (realm adında `-`/`_` olmamalı):
 
 Keycloak client'ları `talay-identity` modülünde `gateway_client_enabled = true` ile oluşturulur. Secret'lar
 Vault `kv/apps/todogi/keycloak` path'indedir ve ExternalSecret ile env olarak gelir.
+
+## E-posta
+
+Doğrulama mailini Keycloak gönderir (realm SMTP ayarı; `talay-identity/scripts/configure-realm-email.sh`). E-postası
+doğrulanmamış kullanıcı login olamaz (403 "User email validation required."). Hoşgeldin mailini gateway kayıttan hemen
+sonra gönderir; gönderim hatası kaydı bozmaz.
+
+| Değişken | Açıklama |
+| --- | --- |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_SSL`, `SMTP_STARTTLS` | Vault'tan; `SMTP_HOST` boşsa hoşgeldin maili kapalı |
+| `GATEWAY_MAIL_REALMS_<REALM>_FROM` | Gönderen adres (SMTP sağlayıcısında doğrulanmış domain); yoksa o realm'e hoşgeldin maili gitmez |
+| `GATEWAY_MAIL_REALMS_<REALM>_FROMNAME`, `_APPNAME`, `_APPURL` | Görünen ad, uygulama adı ve bağlantısı |
+| `GATEWAY_MAIL_REALMS_<REALM>_VERIFYCLIENTID`, `_VERIFYREDIRECTURI` | Doğrulama bağlantısından sonra uygulamaya dönüş (client'ın izinli redirect'i olmalı) |
 
 Request/response logları parola, token, secret ve API key alanlarını maskeler; e-posta adreslerini kısaltır.
