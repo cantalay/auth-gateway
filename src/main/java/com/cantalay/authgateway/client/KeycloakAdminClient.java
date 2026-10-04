@@ -41,7 +41,9 @@ public interface KeycloakAdminClient {
     void sendVerificationEmail(
             @PathVariable String realm,
             @PathVariable String userId,
-            @RequestHeader("Authorization") String authorization
+            @RequestHeader("Authorization") String authorization,
+            @RequestParam(value = "client_id", required = false) String clientId,
+            @RequestParam(value = "redirect_uri", required = false) String redirectUri
     );
 
     @PutMapping(

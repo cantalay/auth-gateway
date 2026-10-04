@@ -72,6 +72,15 @@ public class AuthController {
         log.info("Registration successful in realm {} for {}", config.name(), maskEmail(request.email()));
     }
 
+    @PostMapping({"/resend-verification", "/{realm}/resend-verification"})
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public void resendVerification(@PathVariable(required = false) String realm,
+                                   @Valid @RequestBody ResendVerificationRequest request) {
+        RealmConfig config = realms.resolve(realm);
+        log.info("Verification email requested in realm {} for {}", config.name(), maskEmail(request.email()));
+        authService.resendVerification(config, request);
+    }
+
     @PatchMapping({"/me", "/{realm}/me"})
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void updateProfile(@PathVariable(required = false) String realm,
