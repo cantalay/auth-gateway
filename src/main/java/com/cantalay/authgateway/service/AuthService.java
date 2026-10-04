@@ -5,6 +5,8 @@ import com.cantalay.authgateway.client.KeycloakClient;
 import com.cantalay.authgateway.domain.*;
 import com.cantalay.authgateway.exception.AuthError;
 import com.cantalay.authgateway.exception.BaseAuthException;
+import com.cantalay.authgateway.mail.MailProperties;
+import com.cantalay.authgateway.mail.WelcomeMailService;
 import com.cantalay.authgateway.realm.KeycloakErrors;
 import com.cantalay.authgateway.realm.RealmConfig;
 import feign.FeignException;
@@ -28,6 +30,8 @@ public class AuthService {
     private final AuthAdminService adminService;
     private final KeycloakClient keycloakClient;
     private final KeycloakAdminClient keycloakAdminClient;
+    private final WelcomeMailService welcomeMailService;
+    private final MailProperties mailProperties;
 
     public TokenResponseDto login(RealmConfig realm, LoginRequest request) {
 
@@ -121,23 +125,13 @@ public class AuthService {
                 String userId = user.id();
                 log.info("Sending verification email in realm {} to user {}", realm.name(), userId);
 
-                // Send verification email
-                try {
-                    keycloakAdminClient.sendVerificationEmail(
-                            realm.name(),
-                            userId,
-                            "Bearer " + token
-                    );
-                    log.info("Verification email sent in realm {} to user {}", realm.name(), userId);
-                } catch (FeignException e) {
-                    log.error("Failed to send verification email in realm {} to user {}: HTTP {}",
-                            realm.name(), userId, e.status());
-                    // Log error but don't fail registration if email sending fails
-                    // User can request verification email later
-                }
+                // Send verification email (Keycloak) — failures don't fail registration,
+                // the user can ask for it again via /resend-verification.
+                sendVerification(realm, userId, token);
             } else {
                 log.warn("User created in realm {} but could not be found by email {}", realm.name(), maskEmail(request.email()));
             }
+            welcomeMailService.sendWelcome(realm.name(), request.email(), request.firstName());
         } catch (FeignException.Conflict e) {
             throw new BaseAuthException(AuthError.USER_ALREADY_EXISTS);
         } catch (FeignException.BadRequest e) {
@@ -149,6 +143,44 @@ public class AuthService {
         } catch (FeignException e) {
             throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
         }
+    }
+
+    /**
+     * Re-sends the Keycloak verification email when the address belongs to an unverified user.
+     * Never reveals whether the address is registered.
+     */
+    public void resendVerification(RealmConfig realm, ResendVerificationRequest request) {
+        try {
+            String token = adminService.getAdminAccessToken(realm);
+            List<KeycloakUserDto> users = keycloakAdminClient.getUsersByEmail(
+                    realm.name(), "Bearer " + token, request.email(), true);
+            users.stream()
+                    .filter(user -> !Boolean.TRUE.equals(user.emailVerified()))
+                    .findFirst()
+                    .ifPresent(user -> sendVerification(realm, user.id(), token));
+        } catch (FeignException e) {
+            log.error("Resend verification failed in realm {}: HTTP {}", realm.name(), e.status());
+        }
+    }
+
+    private void sendVerification(RealmConfig realm, String userId, String adminToken) {
+        MailProperties.Realm mail = mailProperties.realm(realm.name());
+        String clientId = mail == null ? null : emptyToNull(mail.getVerifyClientId());
+        String redirectUri = mail == null ? null : emptyToNull(mail.getVerifyRedirectUri());
+        if (clientId == null || redirectUri == null) {
+            clientId = null;
+            redirectUri = null;
+        }
+        try {
+            keycloakAdminClient.sendVerificationEmail(realm.name(), userId, "Bearer " + adminToken, clientId, redirectUri);
+            log.info("Verification email sent in realm {} to user {}", realm.name(), userId);
+        } catch (FeignException e) {
+            log.error("Failed to send verification email in realm {} to user {}: HTTP {}", realm.name(), userId, e.status());
+        }
+    }
+
+    private static String emptyToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     public void updateProfile(RealmConfig realm, String userId, UpdateProfileRequest request) {
