@@ -82,6 +82,17 @@ public class AuthController {
         authService.updateProfile(config, jwt.getSubject(), request);
     }
 
+    /** Account deletion (App Store 5.1.1(v), Google Play account deletion policy): removes the user from the realm. */
+    @DeleteMapping({"/me", "/{realm}/me"})
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteAccount(@PathVariable(required = false) String realm,
+                              @AuthenticationPrincipal Jwt jwt) {
+        RealmConfig config = realmOf(realm, jwt);
+        log.info("Account deletion in realm {} for user {}", config.name(), jwt.getSubject());
+        authService.deleteAccount(config, jwt.getSubject());
+        log.info("Account deleted in realm {} for user {}", config.name(), jwt.getSubject());
+    }
+
     @PostMapping({"/change-password", "/{realm}/change-password"})
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void changePassword(@PathVariable(required = false) String realm,

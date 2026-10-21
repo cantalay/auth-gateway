@@ -172,6 +172,25 @@ public class AuthService {
         }
     }
 
+    /**
+     * Deletes the signed-in user's account from the realm (its sessions go with it). The application deletes its own
+     * data for the user before calling this; App Store and Google Play require that an account can be deleted in-app.
+     */
+    public void deleteAccount(RealmConfig realm, String userId) {
+
+        String token = adminService.getAdminAccessToken(realm);
+
+        try {
+            keycloakAdminClient.deleteUser(realm.name(), userId, "Bearer " + token);
+        } catch (FeignException.NotFound e) {
+            // already gone: the outcome the caller wanted
+        } catch (FeignException.Forbidden e) {
+            throw new BaseAuthException(AuthError.FORBIDDEN_OPERATION);
+        } catch (FeignException e) {
+            throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
+        }
+    }
+
     public void changePassword(RealmConfig realm,
                                String userEmail,
                                String userId,
