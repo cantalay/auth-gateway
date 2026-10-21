@@ -65,4 +65,13 @@ public interface KeycloakAdminClient {
             @RequestHeader("Authorization") String authorization,
             @RequestBody Map<String, Object> payload
     );
+
+    @DeleteMapping(
+            value = "/admin/realms/{realm}/users/{userId}"
+    )
+    void deleteUser(
+            @PathVariable String realm,
+            @PathVariable String userId,
+            @RequestHeader("Authorization") String authorization
+    );
 }
