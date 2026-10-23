@@ -36,7 +36,7 @@ public class AuthService {
         form.add("client_id", realm.clientId());
         form.add("username", request.email());
         form.add("password", request.password());
-        form.add("scope", "openid profile email");
+        form.add("scope", loginScope(realm));
 
         try {
             return keycloakClient.token(realm.name(), form);
@@ -47,13 +47,22 @@ public class AuthService {
         }
     }
 
+    /** Login scope; realms of mobile apps ask for an offline token (the session lives while the app is used). */
+    public static String loginScope(RealmConfig realm) {
+        return realm.offlineAccess() ? "openid profile email offline_access" : "openid profile email";
+    }
+
     public TokenResponseDto refresh(RealmConfig realm, RefreshRequest request) {
 
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
         form.add("grant_type", "refresh_token");
         form.add("client_id", realm.clientId());
         form.add("refresh_token", request.refreshToken());
-        form.add("scope", "openid profile email");
+        // Offline token: the refresh keeps the scopes of the original grant (asking again for offline_access would be
+        // rejected for sessions that started before the realm granted it).
+        if (!realm.offlineAccess()) {
+            form.add("scope", "openid profile email");
+        }
 
         try {
             return keycloakClient.token(realm.name(), form);
