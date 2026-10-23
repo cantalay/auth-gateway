@@ -54,7 +54,8 @@ public class RealmRegistry {
                     StringUtils.hasText(realm.getClientId()) ? realm.getClientId() : realmName + "-gateway",
                     StringUtils.hasText(realm.getAdminClientId()) ? realm.getAdminClientId() : realmName + "-gateway-admin",
                     realm.getAdminClientSecret(),
-                    StringUtils.hasText(realm.getIssuerUri()) ? realm.getIssuerUri() : issuer(base, realmName)
+                    StringUtils.hasText(realm.getIssuerUri()) ? realm.getIssuerUri() : issuer(base, realmName),
+                    realm.isOfflineAccess()
             ));
         });
         this.defaultRealm = defaultRealm;
