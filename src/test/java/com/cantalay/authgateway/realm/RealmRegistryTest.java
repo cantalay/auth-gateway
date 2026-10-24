@@ -70,12 +70,26 @@ class RealmRegistryTest {
         RealmRegistry registry = registry(properties);
 
         assertThat(registry.resolve("conquest").offlineAccess()).isTrue();
+        assertThat(registry.resolve("conquest").platformClientId()).isNull();
         assertThat(registry.resolve("hello").offlineAccess()).isFalse();
         assertThat(registry.resolve(null).offlineAccess()).isFalse();
         assertThat(com.cantalay.authgateway.service.AuthService.loginScope(registry.resolve("conquest")))
                 .isEqualTo("openid profile email offline_access");
         assertThat(com.cantalay.authgateway.service.AuthService.loginScope(registry.resolve("hello")))
                 .isEqualTo("openid profile email");
+    }
+
+    @Test
+    void platformSignInIsOptInPerRealm() {
+        GatewayProperties properties = bindFromEnv(Map.of(
+                "GATEWAY_REALMS_CONQUEST_ADMINCLIENTSECRET", "c-secret",
+                "GATEWAY_REALMS_CONQUEST_PLATFORMLOGIN", "true",
+                "GATEWAY_REALMS_HELLO_ADMINCLIENTSECRET", "hello-secret"
+        ));
+        RealmRegistry registry = registry(properties);
+
+        assertThat(registry.resolve("conquest").platformClientId()).isEqualTo("conquest-platform");
+        assertThat(registry.resolve("hello").platformClientId()).isNull();
     }
 
     @Test
