@@ -31,6 +31,25 @@ public interface KeycloakClient {
             @RequestBody MultiValueMap<String, String> form
     );
 
+    /** talay-keycloak-providers platform-identity: links a platform identity to the token's user. */
+    @PostMapping(
+            value = "/realms/{realm}/platform-identity/link",
+            consumes = MediaType.APPLICATION_JSON_VALUE
+    )
+    java.util.Map<String, Object> platformLink(
+            @PathVariable String realm,
+            @RequestHeader("Authorization") String authorization,
+            @RequestBody java.util.Map<String, String> body
+    );
+
+    @GetMapping(
+            value = "/realms/{realm}/platform-identity/links"
+    )
+    java.util.Map<String, Boolean> platformLinks(
+            @PathVariable String realm,
+            @RequestHeader("Authorization") String authorization
+    );
+
     @GetMapping(
             value = "/realms/{realm}/protocol/openid-connect/userinfo"
     )

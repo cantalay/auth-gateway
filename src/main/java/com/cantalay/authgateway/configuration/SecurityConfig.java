@@ -49,6 +49,7 @@ public class SecurityConfig {
                                 "/auth/register", "/auth/*/register",
                                 "/auth/refresh", "/auth/*/refresh",
                                 "/auth/social", "/auth/*/social",
+                                "/auth/platform", "/auth/*/platform",
                                 "/actuator/health",
                                 "/actuator/health/**",
                                 "/actuator/info",

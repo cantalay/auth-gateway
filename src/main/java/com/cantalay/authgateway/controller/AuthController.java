@@ -118,6 +118,31 @@ public class AuthController {
         return authService.socialLogin(config, request);
     }
 
+    /** Game Center / Play Games sign-in (talay-keycloak-providers platform-identity). */
+    @PostMapping({"/platform", "/{realm}/platform"})
+    public TokenResponseDto platformLogin(@PathVariable(required = false) String realm,
+                                          @Valid @RequestBody PlatformLoginRequest request) {
+        RealmConfig config = realms.resolve(realm);
+        log.info("Platform sign-in attempt in realm {} ({})", config.name(), request.platform());
+        return authService.platformLogin(config, request);
+    }
+
+    /** Links a Game Center / Play Games identity to the signed-in account (sign-in on another device then opens it). */
+    @PostMapping({"/platform/link", "/{realm}/platform/link"})
+    public java.util.Map<String, Object> platformLink(@PathVariable(required = false) String realm,
+                                                      @AuthenticationPrincipal Jwt jwt,
+                                                      @Valid @RequestBody PlatformLoginRequest request) {
+        RealmConfig config = realmOf(realm, jwt);
+        log.info("Platform link in realm {} for user {} ({})", config.name(), jwt.getSubject(), request.platform());
+        return authService.platformLink(config, jwt.getTokenValue(), request);
+    }
+
+    @GetMapping({"/platform/links", "/{realm}/platform/links"})
+    public java.util.Map<String, Boolean> platformLinks(@PathVariable(required = false) String realm,
+                                                        @AuthenticationPrincipal Jwt jwt) {
+        return authService.platformLinks(realmOf(realm, jwt), jwt.getTokenValue());
+    }
+
     /** The token must have been issued by the realm addressed in the path. */
     private RealmConfig realmOf(String realm, Jwt jwt) {
         RealmConfig config = realms.resolve(realm);
