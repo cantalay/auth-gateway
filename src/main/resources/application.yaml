@@ -1,6 +1,19 @@
 spring:
   application:
     name: auth-gateway
+  mail:
+    # Hoşgeldin maili için SMTP (Vault). SMTP_HOST boşsa gateway mail göndermez.
+    host: ${SMTP_HOST:}
+    port: ${SMTP_PORT:465}
+    username: ${SMTP_USERNAME:}
+    password: ${SMTP_PASSWORD:}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.ssl.enable: ${SMTP_SSL:true}
+      mail.smtp.starttls.enable: ${SMTP_STARTTLS:false}
+      mail.smtp.connectiontimeout: 10000
+      mail.smtp.timeout: 10000
+      mail.smtp.writetimeout: 10000
 
 keycloak:
   base-url: ${KEYCLOAK_BASE_URL}
@@ -29,6 +42,10 @@ otel:
     exporter: otlp
 
 management:
+  health:
+    mail:
+      # SMTP sorunları gateway'i NotReady yapmasın.
+      enabled: false
   endpoint:
     health:
       show-details: never
