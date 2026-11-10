@@ -2,6 +2,7 @@ package com.cantalay.authgateway.service;
 
 import com.cantalay.authgateway.client.KeycloakAdminClient;
 import com.cantalay.authgateway.client.KeycloakClient;
+import com.cantalay.authgateway.domain.PlatformLoginRequest;
 import com.cantalay.authgateway.domain.*;
 import com.cantalay.authgateway.exception.AuthError;
 import com.cantalay.authgateway.exception.BaseAuthException;
@@ -288,6 +289,61 @@ public class AuthService {
         } catch (FeignException.Unauthorized e) {
             throw new BaseAuthException(AuthError.INVALID_CREDENTIALS);
 
+        } catch (FeignException e) {
+            throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
+        }
+    }
+
+    /**
+     * Game Center / Play Games sign-in: the realm's platform client runs the platform-identity direct grant flow
+     * (talay-keycloak-providers), which verifies the platform token and finds or creates the linked user.
+     */
+    public TokenResponseDto platformLogin(RealmConfig realm, PlatformLoginRequest request) {
+        if (realm.platformClientId() == null) {
+            throw new BaseAuthException(AuthError.PLATFORM_LOGIN_DISABLED);
+        }
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("grant_type", "password");
+        form.add("client_id", realm.platformClientId());
+        form.add("platform", request.platform());
+        form.add("platform_token", request.token());
+        form.add("scope", loginScope(realm));
+        try {
+            return keycloakClient.token(realm.name(), form);
+        } catch (FeignException.BadRequest | FeignException.Unauthorized e) {
+            if (KeycloakErrors.isClientMisconfigured(e)) {
+                log.error("Keycloak client {} in realm {} rejected the platform grant", realm.platformClientId(), realm.name());
+                throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
+            }
+            throw new BaseAuthException(AuthError.PLATFORM_TOKEN_INVALID);
+        } catch (FeignException e) {
+            throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
+        }
+    }
+
+    /** Links a platform identity to the signed-in user (Keycloak checks the token; another account's identity is 409). */
+    public java.util.Map<String, Object> platformLink(RealmConfig realm, String accessToken, PlatformLoginRequest request) {
+        if (realm.platformClientId() == null) {
+            throw new BaseAuthException(AuthError.PLATFORM_LOGIN_DISABLED);
+        }
+        try {
+            return keycloakClient.platformLink(realm.name(), "Bearer " + accessToken,
+                    java.util.Map.of("platform", request.platform(), "token", request.token()));
+        } catch (FeignException.Conflict e) {
+            throw new BaseAuthException(AuthError.PLATFORM_ALREADY_LINKED);
+        } catch (FeignException.Unauthorized | FeignException.BadRequest e) {
+            throw new BaseAuthException(AuthError.PLATFORM_TOKEN_INVALID);
+        } catch (FeignException e) {
+            throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
+        }
+    }
+
+    public java.util.Map<String, Boolean> platformLinks(RealmConfig realm, String accessToken) {
+        if (realm.platformClientId() == null) {
+            throw new BaseAuthException(AuthError.PLATFORM_LOGIN_DISABLED);
+        }
+        try {
+            return keycloakClient.platformLinks(realm.name(), "Bearer " + accessToken);
         } catch (FeignException e) {
             throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
         }

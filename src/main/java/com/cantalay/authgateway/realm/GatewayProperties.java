@@ -15,6 +15,8 @@ import java.util.Map;
  * GATEWAY_REALMS_HELLO_ADMINCLIENTSECRET=...                  (required)
  * GATEWAY_REALMS_HELLO_ISSUERURI=...                          (default: &lt;base-url&gt;/realms/&lt;realm&gt;)
  * GATEWAY_REALMS_HELLO_OFFLINEACCESS=true                     (default: false; login asks for offline_access)
+ * GATEWAY_REALMS_HELLO_PLATFORMLOGIN=true                     (default: false; Game Center / Play Games via &lt;realm&gt;-platform)
+ * GATEWAY_REALMS_HELLO_PLATFORMCLIENTID=hello-platform        (default: &lt;realm&gt;-platform)
  * </pre>
  */
 @ConfigurationProperties(prefix = "gateway")
@@ -36,6 +38,8 @@ public class GatewayProperties {
         private String adminClientSecret;
         private String issuerUri;
         private boolean offlineAccess;
+        private boolean platformLogin;
+        private String platformClientId;
 
         public String getClientId() { return clientId; }
         public void setClientId(String clientId) { this.clientId = clientId; }
@@ -47,5 +51,9 @@ public class GatewayProperties {
         public void setIssuerUri(String issuerUri) { this.issuerUri = issuerUri; }
         public boolean isOfflineAccess() { return offlineAccess; }
         public void setOfflineAccess(boolean offlineAccess) { this.offlineAccess = offlineAccess; }
+        public boolean isPlatformLogin() { return platformLogin; }
+        public void setPlatformLogin(boolean platformLogin) { this.platformLogin = platformLogin; }
+        public String getPlatformClientId() { return platformClientId; }
+        public void setPlatformClientId(String platformClientId) { this.platformClientId = platformClientId; }
     }
 }

@@ -44,6 +44,8 @@ Ek realm'ler, realm başına (realm adında `-`/`_` olmamalı):
 | `GATEWAY_REALMS_<REALM>_ADMINCLIENTID` | `<realm>-gateway-admin` |
 | `GATEWAY_REALMS_<REALM>_ISSUERURI` | `<base>/realms/<realm>` |
 | `GATEWAY_REALMS_<REALM>_OFFLINEACCESS` | `false` — `true`: giriş `offline_access` ister (mobil uygulama oturumu, kullanıldıkça düşmez; realm `offline_access` rolünü vermeli) |
+| `GATEWAY_REALMS_<REALM>_PLATFORMLOGIN` | `false` — `true`: `POST /auth/<realm>/platform` (Game Center / Play Games; talay-keycloak-providers `platform-identity` akışı) ve `POST /auth/<realm>/platform/link`, `GET /auth/<realm>/platform/links` |
+| `GATEWAY_REALMS_<REALM>_PLATFORMCLIENTID` | `<realm>-platform` |
 
 Keycloak client'ları `talay-identity` modülünde `gateway_client_enabled = true` ile oluşturulur. Secret'lar
 Vault `kv/apps/todogi/keycloak` path'indedir ve ExternalSecret ile env olarak gelir.

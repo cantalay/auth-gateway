@@ -29,6 +29,12 @@ public final class AuthError {
             new Error(HttpStatus.FORBIDDEN, "Token does not belong to this realm.");
     public static final Error REGISTRATION_REJECTED =
             new Error(HttpStatus.BAD_REQUEST, "Registration data was rejected.");
+    public static final Error PLATFORM_LOGIN_DISABLED =
+            new Error(HttpStatus.NOT_FOUND, "Platform sign-in is not enabled for this realm.");
+    public static final Error PLATFORM_TOKEN_INVALID =
+            new Error(HttpStatus.UNAUTHORIZED, "Platform identity could not be verified.");
+    public static final Error PLATFORM_ALREADY_LINKED =
+            new Error(HttpStatus.CONFLICT, "This platform identity is linked to another account.");
 
     /* =======================
        INNER TYPE
