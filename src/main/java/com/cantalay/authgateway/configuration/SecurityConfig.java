@@ -47,6 +47,11 @@ public class SecurityConfig {
                         .requestMatchers(
                                 "/auth/login", "/auth/*/login",
                                 "/auth/register", "/auth/*/register",
+                                "/auth/resend-verification", "/auth/*/resend-verification",
+                                "/auth/forgot-password", "/auth/*/forgot-password",
+                                "/auth/reset-password", "/auth/*/reset-password",
+                                "/auth/reset-password/check", "/auth/*/reset-password/check",
+                                "/auth/verify-email", "/auth/*/verify-email",
                                 "/auth/refresh", "/auth/*/refresh",
                                 "/auth/social", "/auth/*/social",
                                 "/auth/platform", "/auth/*/platform",

@@ -1,5 +1,7 @@
 package com.cantalay.authgateway.client;
 
+import com.cantalay.authgateway.domain.KeycloakCredentialDto;
+import com.cantalay.authgateway.domain.KeycloakFederatedIdentityDto;
 import com.cantalay.authgateway.domain.KeycloakUserDto;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.http.MediaType;
@@ -41,7 +43,9 @@ public interface KeycloakAdminClient {
     void sendVerificationEmail(
             @PathVariable String realm,
             @PathVariable String userId,
-            @RequestHeader("Authorization") String authorization
+            @RequestHeader("Authorization") String authorization,
+            @RequestParam(value = "client_id", required = false) String clientId,
+            @RequestParam(value = "redirect_uri", required = false) String redirectUri
     );
 
     @PutMapping(
@@ -72,6 +76,67 @@ public interface KeycloakAdminClient {
     void deleteUser(
             @PathVariable String realm,
             @PathVariable String userId,
+            @RequestHeader("Authorization") String authorization
+    );
+
+    @GetMapping(
+            value = "/admin/realms/{realm}/users/{userId}",
+            produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    KeycloakUserDto getUser(
+            @PathVariable String realm,
+            @PathVariable String userId,
+            @RequestHeader("Authorization") String authorization
+    );
+
+    @GetMapping(
+            value = "/admin/realms/{realm}/users/{userId}/credentials",
+            produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    List<KeycloakCredentialDto> getCredentials(
+            @PathVariable String realm,
+            @PathVariable String userId,
+            @RequestHeader("Authorization") String authorization
+    );
+
+    @GetMapping(
+            value = "/admin/realms/{realm}/users/{userId}/federated-identity",
+            produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    List<KeycloakFederatedIdentityDto> getFederatedIdentities(
+            @PathVariable String realm,
+            @PathVariable String userId,
+            @RequestHeader("Authorization") String authorization
+    );
+
+    /** Ends every session of the user (refresh and offline tokens stop working). */
+    @PostMapping(
+            value = "/admin/realms/{realm}/users/{userId}/logout"
+    )
+    void logoutUser(
+            @PathVariable String realm,
+            @PathVariable String userId,
+            @RequestHeader("Authorization") String authorization
+    );
+
+    /** Clears the brute-force lockout of the user. */
+    @DeleteMapping(
+            value = "/admin/realms/{realm}/attack-detection/brute-force/users/{userId}"
+    )
+    void clearBruteForce(
+            @PathVariable String realm,
+            @PathVariable String userId,
+            @RequestHeader("Authorization") String authorization
+    );
+
+    /** Revokes the user's consent and offline tokens for a client (offline sessions survive {@link #logoutUser}). */
+    @DeleteMapping(
+            value = "/admin/realms/{realm}/users/{userId}/consents/{clientId}"
+    )
+    void revokeConsent(
+            @PathVariable String realm,
+            @PathVariable String userId,
+            @PathVariable String clientId,
             @RequestHeader("Authorization") String authorization
     );
 }

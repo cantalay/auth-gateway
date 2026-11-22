@@ -26,7 +26,7 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
     private static final java.util.regex.Pattern EMAIL = java.util.regex.Pattern.compile(
             "([A-Za-z0-9])[A-Za-z0-9._%+-]*@");
     private static final java.util.regex.Pattern SENSITIVE_JSON_FIELD = java.util.regex.Pattern.compile(
-            "\"([^\"]*(?i:password|token|secret|api_?key)[^\"]*)\"\\s*:\\s*\"[^\"]*\"?");
+            "\"([^\"]*(?i:password|token|secret|api_?key)[^\"]*)\"\\s*:\\s*\"(?:[^\"\\\\]|\\\\.)*\"?");
 
     @Override
     protected void doFilterInternal(

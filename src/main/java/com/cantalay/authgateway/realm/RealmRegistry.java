@@ -2,6 +2,7 @@ package com.cantalay.authgateway.realm;
 
 import com.cantalay.authgateway.exception.AuthError;
 import com.cantalay.authgateway.exception.BaseAuthException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -23,6 +24,18 @@ public class RealmRegistry {
     private final String defaultRealm;
     private final Map<String, RealmConfig> realms;
 
+    public RealmRegistry(String baseUrl, String defaultRealm, String defaultClientId, String defaultAdminClientId,
+                         String defaultAdminClientSecret, String defaultIssuerUri, GatewayProperties properties) {
+        this(baseUrl, defaultRealm, defaultClientId, defaultAdminClientId, defaultAdminClientSecret, defaultIssuerUri,
+                false, properties);
+    }
+
+    /**
+     * @param defaultOfflineAccess {@code KEYCLOAK_OFFLINE_ACCESS}: login in the default realm asks for
+     *                             {@code offline_access} (as {@code GATEWAY_REALMS_<REALM>_OFFLINEACCESS} does for the
+     *                             other realms); off by default
+     */
+    @Autowired
     public RealmRegistry(
             @Value("${keycloak.base-url}") String baseUrl,
             @Value("${keycloak.realm}") String defaultRealm,
@@ -30,6 +43,7 @@ public class RealmRegistry {
             @Value("${keycloak.admin.client-id}") String defaultAdminClientId,
             @Value("${keycloak.admin.client-secret}") String defaultAdminClientSecret,
             @Value("${keycloak.issuer-uri:}") String defaultIssuerUri,
+            @Value("${keycloak.offline-access:false}") boolean defaultOfflineAccess,
             GatewayProperties properties
     ) {
         String base = trimTrailingSlash(baseUrl);
@@ -39,7 +53,8 @@ public class RealmRegistry {
                 defaultClientId,
                 defaultAdminClientId,
                 defaultAdminClientSecret,
-                StringUtils.hasText(defaultIssuerUri) ? defaultIssuerUri : issuer(base, defaultRealm)
+                StringUtils.hasText(defaultIssuerUri) ? defaultIssuerUri : issuer(base, defaultRealm),
+                defaultOfflineAccess
         ));
         properties.getRealms().forEach((name, realm) -> {
             String realmName = name.toLowerCase();

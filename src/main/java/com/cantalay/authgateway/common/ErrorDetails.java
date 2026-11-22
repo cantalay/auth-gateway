@@ -20,6 +20,8 @@ public class ErrorDetails {
     private Integer status;
     private String error;
     private String message;
+    /** Machine-readable code ({@code reset_token_invalid}, {@code password_policy}, ...); absent for older errors. */
+    private String code;
     private String path;
     private Map<String, String> validationErrors;
     

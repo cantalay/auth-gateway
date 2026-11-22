@@ -33,6 +33,30 @@ public final class KeycloakErrors {
         return body.contains("password") && (body.contains("policy") || body.contains("invalidpassword"));
     }
 
+    /**
+     * Which password policy rule Keycloak rejected ({@code invalidPasswordMinLengthMessage} → {@code length}), for
+     * clients that explain the rule; {@code null} when the body names none.
+     */
+    public static String passwordPolicyRule(FeignException e) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("invalidpassword([a-z]+)message").matcher(body(e));
+        if (!m.find()) {
+            return null;
+        }
+        return switch (m.group(1)) {
+            case "minlength", "maxlength" -> "length";
+            case "mindigits" -> "digits";
+            case "minlowercasechars" -> "lowerCase";
+            case "minuppercasechars" -> "upperCase";
+            case "minspecialchars" -> "specialChars";
+            case "history" -> "passwordHistory";
+            case "notusername" -> "notUsername";
+            case "notemail" -> "notEmail";
+            case "blacklisted" -> "passwordBlacklist";
+            case "regexpattern" -> "regexPattern";
+            default -> "policy";
+        };
+    }
+
     /** Masks an email address for logs: {@code j***@example.com}. */
     public static String maskEmail(String email) {
         if (email == null) {

@@ -1,0 +1,43 @@
+{
+  "realm": "vitafinder",
+  "displayName": "VitaFinder",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "verifyEmail": false,
+  "revokeRefreshToken": true,
+  "passwordPolicy": "length(12) and digits(1) and lowerCase(1) and upperCase(1) and specialChars(1) and passwordHistory(5) and notUsername",
+  "bruteForceProtected": true,
+  "failureFactor": 5,
+  "clients": [
+    {
+      "clientId": "vitafinder-gateway",
+      "enabled": true,
+      "publicClient": true,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": false,
+      "fullScopeAllowed": true
+    },
+    {
+      "clientId": "vitafinder-gateway-admin",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "it-vitafinder-admin-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "fullScopeAllowed": true
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-vitafinder-gateway-admin",
+      "enabled": true,
+      "serviceAccountClientId": "vitafinder-gateway-admin",
+      "clientRoles": {"realm-management": ["manage-users", "query-users", "view-users"]}
+    }
+  ]
+}
