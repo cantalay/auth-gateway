@@ -41,6 +41,10 @@ public final class AuthError {
             new Error(HttpStatus.GONE, "This password reset link is invalid or has expired.", "reset_token_invalid");
     public static final Error VERIFY_TOKEN_INVALID =
             new Error(HttpStatus.GONE, "This email confirmation link is invalid or has expired.", "verify_token_invalid");
+    public static final Error SESSIONS_REVOKE_FAILED =
+            new Error(HttpStatus.SERVICE_UNAVAILABLE,
+                    "Password changed, but other sessions could not be signed out. Request a new reset link to try again.",
+                    "sessions_revoke_failed");
     public static final Error RATE_LIMITED =
             new Error(HttpStatus.TOO_MANY_REQUESTS, "Too many requests. Try again later.", "rate_limited");
 

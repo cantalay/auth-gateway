@@ -65,10 +65,11 @@ public class AuthController {
     @PostMapping({"/register", "/{realm}/register"})
     @ResponseStatus(HttpStatus.CREATED)
     public void register(@PathVariable(required = false) String realm,
-                         @Valid @RequestBody RegisterRequest request) {
+                         @Valid @RequestBody RegisterRequest request,
+                         jakarta.servlet.http.HttpServletRequest http) {
         RealmConfig config = realms.resolve(realm);
         log.info("Registration attempt in realm {} for {}", config.name(), maskEmail(request.email()));
-        authService.register(config, request);
+        authService.register(config, request, com.cantalay.authgateway.account.ClientIp.of(http));
         log.info("Registration successful in realm {} for {}", config.name(), maskEmail(request.email()));
     }
 

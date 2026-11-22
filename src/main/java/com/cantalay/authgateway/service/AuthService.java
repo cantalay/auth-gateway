@@ -118,7 +118,13 @@ public class AuthService {
     }
 
     public void register(RealmConfig realm, RegisterRequest request) {
+        register(realm, request, null);
+    }
 
+    /** @param clientIp caller address for the registration limits ({@code null}: address limit not applied) */
+    public void register(RealmConfig realm, RegisterRequest request, String clientIp) {
+
+        registrationHook.beforeRegistration(realm, request, clientIp);
         String token = adminService.getAdminAccessToken(realm);
 
         Map<String, Object> payload = new LinkedHashMap<>(Map.of(

@@ -21,6 +21,7 @@ import java.util.Map;
  * GATEWAY_MAIL_REALMS_TODOGI_LOCALES=tr,en
  * GATEWAY_MAIL_REALMS_TODOGI_DEFAULTLOCALE=tr
  * GATEWAY_MAIL_REALMS_TODOGI_SUPPORTEMAIL=destek@todogi.net             (optional footer line)
+ * GATEWAY_MAIL_REALMS_VITAFINDER_RESENDVERIFICATION=true                (opt-in resend of Keycloak's email; on with VERIFYURL)
  * GATEWAY_MAIL_REALMS_TODOGI_VERIFYCLIENTID=...      (Keycloak verification only: return to the app afterwards)
  * GATEWAY_MAIL_REALMS_TODOGI_VERIFYREDIRECTURI=...
  * </pre>
@@ -62,6 +63,7 @@ public class MailProperties {
         private List<String> locales = new ArrayList<>();
         private String defaultLocale;
         private String supportEmail;
+        private Boolean resendVerification;
 
         public String getFrom() { return from; }
         public void setFrom(String from) { this.from = from; }
@@ -85,6 +87,8 @@ public class MailProperties {
         public void setDefaultLocale(String defaultLocale) { this.defaultLocale = defaultLocale; }
         public String getSupportEmail() { return supportEmail; }
         public void setSupportEmail(String supportEmail) { this.supportEmail = supportEmail; }
+        public Boolean getResendVerification() { return resendVerification; }
+        public void setResendVerification(Boolean resendVerification) { this.resendVerification = resendVerification; }
 
         /** Default email language: {@code defaultLocale}, else the first configured locale, else Turkish. */
         public String effectiveDefaultLocale() {

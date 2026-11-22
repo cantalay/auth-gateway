@@ -205,6 +205,29 @@ class AccountFlowsIT {
                 after.get("refresh_token").asString());
     }
 
+    /** Single use under concurrency: parallel requests with one link change the password once. */
+    @Test
+    void parallelResetsWithOneLink() throws Exception {
+        String email = registeredUser();
+        gateway("/auth/todogi/forgot-password", Map.of("email", email));
+        String token = Mails.token(awaitMail(email, 1).get(0));
+
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        List<java.util.concurrent.Future<Integer>> futures = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            String password = "Paralel-Parola-" + i + "!";
+            futures.add(pool.submit(() -> gateway("/auth/todogi/reset-password", Map.of("token", token, "newPassword", password)).statusCode()));
+        }
+        List<Integer> statuses = new ArrayList<>();
+        for (java.util.concurrent.Future<Integer> f : futures) {
+            statuses.add(f.get());
+        }
+        pool.shutdown();
+
+        assertThat(statuses).containsOnly(200, 410);
+        assertThat(statuses.stream().filter(c -> c == 200).count()).isEqualTo(1);
+    }
+
     /** Criterion 8: a brute-force lockout does not survive a successful reset. */
     @Test
     void resetLiftsTheLockout() throws Exception {
@@ -319,7 +342,8 @@ class AccountFlowsIT {
         JsonNode session = json(gateway("/auth/vitafinder/login", Map.of("email", email, "password", PASSWORD)), 200);
         assertThat(claims(session.get("refresh_token").asString()).get("typ").asString()).isEqualTo("Refresh");
         assertThat(gateway("/auth/vitafinder/login", Map.of("email", email, "password", "Yanlis-Parola-1!")).statusCode()).isEqualTo(401);
-        assertThat(gateway("/auth/vitafinder/resend-verification", Map.of("email", email)).statusCode()).isEqualTo(202);
+        // resend-verification is opt-in per realm (the endpoint did not exist before this change)
+        assertThat(gateway("/auth/vitafinder/resend-verification", Map.of("email", email)).statusCode()).isEqualTo(404);
 
         HttpResponse<String> forgot = gateway("/auth/vitafinder/forgot-password", Map.of("email", email));
         assertThat(forgot.statusCode()).isEqualTo(404);

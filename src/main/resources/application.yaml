@@ -34,6 +34,13 @@ gateway:
     secrets: ${GATEWAY_ACTION_TOKEN_SECRETS:}
     reset-ttl: 60m
     verify-ttl: 24h
+  # Kayıt sınırı (tüm realm'ler; aşımda 429 rate_limited). Mobil operatör CGNAT'ında çok oyuncu tek IP paylaşabilir.
+  register-limit:
+    per-ip: ${GATEWAY_REGISTER_LIMIT_PER_IP:20}
+    per-email: ${GATEWAY_REGISTER_LIMIT_PER_EMAIL:5}
+  rate-limit:
+    # Hız sınırı belleğinin üst sınırı (anahtar sayısı, LRU).
+    max-keys: 50000
 
 otel:
   exporter:

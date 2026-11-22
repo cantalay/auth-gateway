@@ -11,12 +11,12 @@ Her endpoint realm'li (`/auth/{realm}/...`) ve varsayılan realm için eski (`/a
 | --- | --- | --- | --- |
 | POST | `/auth/{realm}/login` | — | `{email, password}` → Keycloak token yanıtı |
 | POST | `/auth/{realm}/refresh` | — | `{refreshToken}` → yeni token |
-| POST | `/auth/{realm}/register` | — | `{email, password, firstName, lastName, locale?}` → 201; doğrulama e-postası (gateway bağlantısı ya da Keycloak'ınki, bkz. E-posta) + hoş geldin e-postası |
-| POST | `/auth/{realm}/resend-verification` | — | `{email, locale?}` → her zaman 202 (adresin kayıtlı olup olmadığını açığa vurmaz); e-posta başına dakikada 1, saatte 5 |
+| POST | `/auth/{realm}/register` | — | `{email, password, firstName, lastName, locale?}` → 201; doğrulama e-postası (gateway bağlantısı ya da Keycloak'ınki, bkz. E-posta) + hoş geldin e-postası. IP başına saatte 20, e-posta başına saatte 5 (aşımda 429 `rate_limited`; `GATEWAY_REGISTER_LIMIT_PER_IP`, `_PER_EMAIL`) |
+| POST | `/auth/{realm}/resend-verification` | — | **realm başına açılır** (`VERIFYURL` ya da `RESENDVERIFICATION=true`; değilse 404 `realm_feature_disabled`). `{email, locale?}` → her zaman 202 (adresin kayıtlı olup olmadığını açığa vurmaz); e-posta başına dakikada 1, saatte 5 |
 | POST | `/auth/{realm}/verify-email` | — | `{token}` → 204 (zaten onaylıysa da 204) / 410 `verify_token_invalid`; sonra istemci `/refresh` ile `email_verified` claim'ini tazeler |
 | POST | `/auth/{realm}/forgot-password` | — | `{email, locale?}` → her zaman 202; parolalı hesaba sıfırlama bağlantısı, parolasız (Google/Apple) hesaba "sağlayıcınla giriş yap" e-postası |
 | POST | `/auth/{realm}/reset-password/check` | — | `{token}` → 204 / 410 `reset_token_invalid` (form açılmadan "bağlantının süresi doldu" ekranı) |
-| POST | `/auth/{realm}/reset-password` | — | `{token, newPassword}` → 200 token yanıtı (bu cihazda yeni oturum) / 204 (parola değişti, giriş yapılamadı) / 400 `password_policy` / 410 `reset_token_invalid` |
+| POST | `/auth/{realm}/reset-password` | — | `{token, newPassword}` → 200 token yanıtı (bu cihazda yeni oturum) / 204 (parola değişti, giriş yapılamadı) / 400 `password_policy` / 410 `reset_token_invalid` / 503 `sessions_revoke_failed` |
 | POST | `/auth/{realm}/social` | — | `{code, redirectUri}` → token (kc_idp_hint ile alınan code) |
 | POST | `/auth/{realm}/logout` | Bearer | `{refreshToken}` |
 | GET | `/auth/{realm}/me` | Bearer | Kullanıcı bilgisi |
@@ -35,13 +35,19 @@ Hata gövdesi `{success:false, error:{timestamp, status, error, message, path, c
 | `password_policy` | 400 | Parola realm politikasına uymuyor; `validationErrors.newPassword` reddedilen kural (`length`, `digits`, `lowerCase`, `upperCase`, `specialChars`, `passwordHistory`, `notUsername`, `notEmail`, `policy`) |
 | `reset_token_invalid` | 410 | Sıfırlama bağlantısı süresi dolmuş, kullanılmış (parola değişti), değiştirilmiş ya da başka realm'in/amacın |
 | `verify_token_invalid` | 410 | Onay bağlantısı geçersiz ya da hesabın e-postası değişmiş |
-| `rate_limited` | 429 | Belirteç uçlarında (`reset-password`, `reset-password/check`, `verify-email`) IP başına saatte 20 aşıldı |
+| `rate_limited` | 429 | Belirteç uçlarında (`reset-password`, `reset-password/check`, `verify-email`) IP başına saatte 20 ya da kayıt sınırı aşıldı |
+| `sessions_revoke_failed` | 503 | Parola **değişti** ama diğer oturumlar/offline token'lar kapatılamadı (iki deneme); yeni oturum açılmaz. İstemci: "Parolan değişti ama diğer cihazlardaki oturumlar kapatılamadı. Yeni bağlantı isteyip tekrar dene ya da destekle iletişime geç." Yeniden deneme yolu: `forgot-password` → yeni bağlantı → yeni parolayla `reset-password` (eski bağlantı parola değiştiği için 410; sıfırlama oturum kapatmayı yeniden yapar) |
 | `realm_feature_disabled` | 404 | Realm'de bu özellik açık değil (`RESETURL` / `VERIFYURL` tanımsız) |
 
 E-posta alan uçlar (`forgot-password`, `resend-verification`) sınır aşılsa da 202 döner, yalnız e-posta gitmez:
 `forgot-password` e-posta başına saatte 3, IP başına saatte 10; `resend-verification` IP başına saatte 20. Kullanıcı
 araması ve gönderim arka planda yapılır; yanıt (ve süresi) adresin kayıtlı olup olmadığını göstermez. Sınırlar pod
-belleğindedir (tek replika); IP, Traefik'in `X-Forwarded-For`'a eklediği son değerdir.
+belleğindedir (tek replika; en çok 50 000 anahtar, LRU); IP, Traefik'in `X-Forwarded-For`'a eklediği son değerdir, IPv6
+adresleri /64 önekiyle sayılır.
+
+Aynı bağlantıyla eşzamanlı istekler kullanıcı başına kilitle sıraya girer ve parmak izi kilit içinde yeniden denetlenir:
+parola bir kez değişir, diğerleri 410 alır (`verify-email` de aynı). Yönetim istemcisinin token'ı realm başına, süresi
+dolmadan 30 sn öncesine kadar önbellekte tutulur.
 
 ## Yapılandırma
 
@@ -87,7 +93,12 @@ Her şey realm başına açılır; ayar yoksa davranış eskisi gibidir:
 | `VERIFYURL` var | Doğrulama e-postasını gateway gönderir: `<VERIFYURL>#t=<belirteç>` (24 saat; e-posta değişince geçersiz). Keycloak'ın e-postası gitmez |
 | `RESETURL` yok | `forgot-password`, `reset-password`, `reset-password/check` 404 `realm_feature_disabled` |
 | `RESETURL` var | Sıfırlama bağlantısı `<RESETURL>#t=<belirteç>` (60 dk, tek kullanım). Başarılı sıfırlama: tüm oturumlar ve offline token'lar kapanır, brute-force kilidi kalkar, "parolan değişti" e-postası gider, bu cihazda yeni parolayla giriş yapılır |
-| `FROM` yok | O realm'e gateway e-postası gitmez (hoş geldin dahil); `RESETURL`/`VERIFYURL` tanımlı olsa da özellikler kapalı kalır (açılışta hata logu) |
+| `FROM` yok | O realm'e gateway e-postası gitmez (hoş geldin dahil). `RESETURL` tanımlıysa şifremi unuttum kapalı kalır; `VERIFYURL` tanımlıysa doğrulama Keycloak e-postasına düşer (eski davranış). İkisi de açılışta hata logu ve `auth_gateway_feature_degraded{realm, feature}=1` |
+| SMTP / `GATEWAY_ACTION_TOKEN_SECRETS` yok | `FROM` yokmuş gibi |
+| `RESENDVERIFICATION=true` | `VERIFYURL`'siz realm'de `resend-verification` Keycloak e-postasıyla açılır |
+
+E-postalarda ad yalnız e-postası doğrulanmış hesapta kullanılır ("Merhaba Can,"); hoş geldin ve doğrulama e-postaları
+"Merhaba," ile başlar (adı kaydı yapan yazar, e-posta henüz kimsenin onaylamadığı adrese gider).
 
 Belirteç bağlantının parçasındadır (`#t=`): erişim loglarına ve `Referer`'a düşmez. Uygulama `location.hash`'ten okur,
 adres çubuğundan siler ve gövdede `token` alanıyla gönderir.
@@ -102,6 +113,7 @@ adres çubuğundan siler ve gövdede `token` alanıyla gönderir.
 | `GATEWAY_MAIL_REALMS_<REALM>_VERIFYURL` | E-posta onay sayfası (ör. `https://todogi.net/eposta-onay`); gateway doğrulamasını açar |
 | `GATEWAY_MAIL_REALMS_<REALM>_LOCALES`, `_DEFAULTLOCALE` | E-posta dilleri (`tr,en`) ve varsayılan (`tr`) |
 | `GATEWAY_MAIL_REALMS_<REALM>_SUPPORTEMAIL` | Opsiyonel; altbilgide "Yardım için … adresine yaz" |
+| `GATEWAY_MAIL_REALMS_<REALM>_RESENDVERIFICATION` | `resend-verification`'ı açar/kapatır; varsayılan: `VERIFYURL` varsa açık, yoksa kapalı |
 | `GATEWAY_MAIL_REALMS_<REALM>_VERIFYCLIENTID`, `_VERIFYREDIRECTURI` | Yalnız Keycloak doğrulamasında: bağlantıdan sonra uygulamaya dönüş (client'ın izinli redirect'i olmalı) |
 
 ### Eylem belirteci anahtarını döndürme
@@ -119,7 +131,9 @@ Anahtar sızdıysa 1'de eskiyi hemen çıkar: açıktaki bağlantılar geçersiz
 ## Metrikler
 
 `/actuator/prometheus`: `auth_gateway_action_requests_total{realm, action=forgot|reset|reset_check|verify|resend,
-result=ok|invalid|expired|policy|rate_limited|disabled}`, `auth_gateway_mail_sent_total{realm, template, result=ok|error|disabled}`.
+result=ok|invalid|expired|policy|rate_limited|disabled|sessions_failed}` (`action` ayrıca `register` için
+`rate_limited`), `auth_gateway_mail_sent_total{realm, template, result=ok|error|disabled}`,
+`auth_gateway_account_tasks_rejected_total` (kuyruk dolu, e-posta düştü), `auth_gateway_feature_degraded{realm, feature}`.
 
 ## Testler
 

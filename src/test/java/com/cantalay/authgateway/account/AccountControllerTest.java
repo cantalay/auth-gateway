@@ -77,12 +77,14 @@ class AccountControllerTest {
     private final AtomicLong passwordCreated = new AtomicLong(1_700_000_000_000L);
     private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
     private ActionTokenService tokens;
+    private MailProperties mailProperties;
+    private AccountActionService actions;
     private MockMvc mvc;
     private KeycloakUserDto can;
 
     @BeforeEach
     void setUp() {
-        MailProperties mailProperties = new MailProperties();
+        mailProperties = new MailProperties();
         MailProperties.Realm todogi = new MailProperties.Realm();
         todogi.setFrom("noreply@todogi.net");
         todogi.setFromName("ToDoGi");
@@ -103,7 +105,7 @@ class AccountControllerTest {
 
         tokens = new ActionTokenService(SECRETS, Duration.ofMinutes(60), Duration.ofHours(24), clock);
         AccountMailService mail = new AccountMailService(provider, mailProperties, new MailTemplates(), meters, "smtp.test");
-        AccountActionService actions = new AccountActionService(adminService, keycloak, admin, tokens, mail, mailProperties,
+        actions = new AccountActionService(adminService, keycloak, admin, tokens, mail, mailProperties,
                 new RateLimiter(clock), meters, Runnable::run);
 
         GatewayProperties gatewayProperties = new GatewayProperties();
@@ -398,6 +400,15 @@ class AccountControllerTest {
         assertThat(payload.getValue()).doesNotContainKey("attributes"); // payload as before
         verify(admin).sendVerificationEmail(eq("vitafinder"), eq("vf-1"), eq("Bearer adm"), isNull(), isNull());
 
+        // resend-verification is opt-in per realm
+        mvc.perform(post("/auth/vitafinder/resend-verification").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"a@b.co\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("realm_feature_disabled"));
+        MailProperties.Realm optIn = new MailProperties.Realm();
+        optIn.setResendVerification(true);
+        mailProperties.getRealms().put("vitafinder", optIn);
+
         mvc.perform(post("/auth/vitafinder/resend-verification").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"email\":\"a@b.co\"}")).andExpect(status().isAccepted());
         verify(admin, times(1)).sendVerificationEmail(any(), any(), any(), any(), any()); // within the minute
@@ -406,6 +417,181 @@ class AccountControllerTest {
                 .content("{\"email\":\"a@b.co\"}")).andExpect(status().isAccepted());
         verify(admin, times(2)).sendVerificationEmail(eq("vitafinder"), eq("vf-1"), eq("Bearer adm"), isNull(), isNull());
         assertThat(sent).isEmpty(); // no gateway email for realms without a sender
+    }
+
+    /* ---------- review fixes ---------- */
+
+    @Test
+    void failedSessionRevocationIsA503WithoutANewSession() throws Exception {
+        String token = resetToken();
+        doThrow(feign(503, "{}")).when(admin).logoutUser("todogi", USER_ID, "Bearer adm");
+
+        mvc.perform(post("/auth/todogi/reset-password").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"token\":\"" + token + "\",\"newPassword\":\"Yeni-Parola-2026\"}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.error.code").value("sessions_revoke_failed"));
+
+        verify(admin, times(2)).logoutUser("todogi", USER_ID, "Bearer adm"); // retried once
+        verify(keycloak, never()).token(eq("todogi"), any());
+        assertThat(Mails.subject(sent.get(sent.size() - 1))).isEqualTo("Your ToDoGi password was changed");
+        assertThat(meters.find("auth.gateway.action.requests").tag("action", "reset").tag("result", "sessions_failed")
+                .counter().count()).isEqualTo(1);
+
+        // the way to try again: a new link (the old one is spent because the password changed)
+        mvc.perform(post("/auth/todogi/reset-password/check").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"token\":\"" + token + "\"}")).andExpect(status().isGone());
+        org.mockito.Mockito.doNothing().when(admin).logoutUser("todogi", USER_ID, "Bearer adm");
+        when(keycloak.token(eq("todogi"), any())).thenReturn(new TokenResponseDto("at", "rt", 300, 0, "Bearer", "openid"));
+        String second = resetToken();
+        mvc.perform(post("/auth/todogi/reset-password").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"token\":\"" + second + "\",\"newPassword\":\"Ucuncu-Parola-2026\"}"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void aTransientRevocationErrorIsRetried() throws Exception {
+        String token = resetToken();
+        doThrow(feign(500, "{}")).doNothing().when(admin).revokeConsent("todogi", USER_ID, "auth", "Bearer adm");
+        when(keycloak.token(eq("todogi"), any())).thenReturn(new TokenResponseDto("at", "rt", 300, 0, "Bearer", "openid"));
+
+        mvc.perform(post("/auth/todogi/reset-password").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"token\":\"" + token + "\",\"newPassword\":\"Yeni-Parola-2026\"}"))
+                .andExpect(status().isOk());
+        verify(admin, times(2)).revokeConsent("todogi", USER_ID, "auth", "Bearer adm");
+    }
+
+    @Test
+    void concurrentResetsWithOneLinkChangeThePasswordOnce() throws Exception {
+        String token = resetToken();
+        java.util.concurrent.atomic.AtomicInteger inside = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger maxInside = new java.util.concurrent.atomic.AtomicInteger();
+        doAnswer(i -> {
+            maxInside.accumulateAndGet(inside.incrementAndGet(), Math::max);
+            Thread.sleep(150);
+            passwordCreated.addAndGet(1000);
+            inside.decrementAndGet();
+            return null;
+        }).when(admin).resetPassword(eq("todogi"), eq(USER_ID), eq("Bearer adm"), anyMap());
+        when(keycloak.token(eq("todogi"), any())).thenReturn(new TokenResponseDto("at", "rt", 300, 0, "Bearer", "openid"));
+
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        List<java.util.concurrent.Future<Integer>> results = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            results.add(pool.submit(() -> mvc.perform(post("/auth/todogi/reset-password").contentType(MediaType.APPLICATION_JSON)
+                            .header("X-Forwarded-For", "203.0.113.50")
+                            .content("{\"token\":\"" + token + "\",\"newPassword\":\"Yeni-Parola-2026\"}"))
+                    .andReturn().getResponse().getStatus()));
+        }
+        List<Integer> statuses = new ArrayList<>();
+        for (java.util.concurrent.Future<Integer> f : results) {
+            statuses.add(f.get());
+        }
+        pool.shutdown();
+
+        assertThat(statuses).containsOnly(200, 410);
+        assertThat(statuses.stream().filter(c -> c == 200).count()).isEqualTo(1);
+        assertThat(maxInside.get()).isEqualTo(1);
+        verify(admin, times(1)).resetPassword(any(), any(), any(), anyMap());
+    }
+
+    @Test
+    void concurrentConfirmationsAreSerialized() throws Exception {
+        postJson("/auth/todogi/resend-verification", "{\"email\":\"can@ornek.com\"}");
+        String token = Mails.token(sent.get(0));
+        java.util.concurrent.atomic.AtomicInteger inside = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger maxInside = new java.util.concurrent.atomic.AtomicInteger();
+        doAnswer(i -> {
+            maxInside.accumulateAndGet(inside.incrementAndGet(), Math::max);
+            Thread.sleep(100);
+            can = new KeycloakUserDto(USER_ID, "can@ornek.com", "can@ornek.com", "Can", "Yılmaz", true, true, 0L, null);
+            inside.decrementAndGet();
+            return null;
+        }).when(admin).updateUser(eq("todogi"), eq(USER_ID), eq("Bearer adm"), anyMap());
+
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(3);
+        List<java.util.concurrent.Future<Integer>> results = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            results.add(pool.submit(() -> mvc.perform(post("/auth/todogi/verify-email").contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"token\":\"" + token + "\"}")).andReturn().getResponse().getStatus()));
+        }
+        for (java.util.concurrent.Future<Integer> f : results) {
+            assertThat(f.get()).isEqualTo(204);
+        }
+        pool.shutdown();
+        assertThat(maxInside.get()).isEqualTo(1);
+        verify(admin, times(1)).updateUser(any(), any(), any(), anyMap());
+    }
+
+    @Test
+    void registrationIsRateLimitedPerAddressAndEmail() throws Exception {
+        String body = "{\"email\":\"new@ornek.com\",\"password\":\"Parola-2026-xyz\",\"firstName\":\"N\",\"lastName\":\"U\"}";
+        for (int i = 0; i < 5; i++) {
+            mvc.perform(post("/auth/vitafinder/register").contentType(MediaType.APPLICATION_JSON)
+                    .header("X-Forwarded-For", "198.51.100." + (10 + i)).content(body)).andExpect(status().isCreated());
+        }
+        mvc.perform(post("/auth/vitafinder/register").contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Forwarded-For", "198.51.100.99").content(body))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.error.code").value("rate_limited"));
+
+        for (int i = 0; i < 20; i++) {
+            mvc.perform(post("/auth/vitafinder/register").contentType(MediaType.APPLICATION_JSON)
+                    .header("X-Forwarded-For", "2001:db8:1:2::" + Integer.toHexString(i + 1))
+                    .content(body.replace("new@", "ip" + i + "@"))).andExpect(status().isCreated());
+        }
+        // another address in the same IPv6 /64
+        mvc.perform(post("/auth/vitafinder/register").contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Forwarded-For", "2001:db8:1:2:ffff::1").content(body.replace("new@", "other@")))
+                .andExpect(status().isTooManyRequests());
+    }
+
+    @Test
+    void namesOnlyGreetConfirmedAccounts() throws Exception {
+        when(admin.getUsersByEmail("todogi", "Bearer adm", "can@ornek.com", true)).thenReturn(List.of(
+                new KeycloakUserDto(USER_ID, "can@ornek.com", "can@ornek.com", "Tıkla evil.example", "X", true, false, 0L, null)));
+        mvc.perform(post("/auth/todogi/register").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"can@ornek.com\",\"password\":\"Parola-2026-xyz\",\"firstName\":\"Tıkla evil.example\",\"lastName\":\"X\"}"))
+                .andExpect(status().isCreated());
+        assertThat(sent).hasSize(2);
+        for (MimeMessage m : sent) {
+            assertThat(Mails.plainText(m)).doesNotContain("evil.example").startsWith("Merhaba,");
+        }
+
+        sent.clear();
+        postJson("/auth/todogi/forgot-password", "{\"email\":\"ayse@gmail.com\"}"); // verified (Google) account
+        assertThat(Mails.plainText(sent.get(0))).startsWith("Merhaba Ayşe,");
+    }
+
+    @Test
+    void verifyUrlWithoutEmailFallsBackToKeycloak() throws Exception {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<JavaMailSender> provider = mock(ObjectProvider.class);
+        when(provider.getIfAvailable()).thenReturn(sender);
+        AccountMailService noSmtp = new AccountMailService(provider, mailProperties, new MailTemplates(), meters, "");
+        AccountActionService degraded = new AccountActionService(adminService, keycloak, admin, tokens, noSmtp, mailProperties,
+                new RateLimiter(clock), meters, Runnable::run);
+        RealmRegistry realms = new RealmRegistry("https://auth.cantalay.com", "todogi", "auth", "auth-gateway-admin", "s", "",
+                new GatewayProperties());
+        MockMvc degradedMvc = MockMvcBuilders.standaloneSetup(new AccountController(degraded, realms),
+                        new AuthController(new AuthService(adminService, keycloak, admin, degraded), realms))
+                .setControllerAdvice(new GlobalAuthExceptionHandler()).build();
+
+        assertThat(degraded.verifyMode(realms.resolve("todogi"))).isEqualTo(AccountActionService.VerifyMode.KEYCLOAK);
+        degradedMvc.perform(post("/auth/todogi/register").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"can@ornek.com\",\"password\":\"Parola-2026-xyz\",\"firstName\":\"C\",\"lastName\":\"Y\"}"))
+                .andExpect(status().isCreated());
+        verify(admin).sendVerificationEmail(eq("todogi"), eq(USER_ID), eq("Bearer adm"), isNull(), isNull());
+        degradedMvc.perform(post("/auth/todogi/verify-email").contentType(MediaType.APPLICATION_JSON).content("{\"token\":\"x\"}"))
+                .andExpect(status().isNotFound());
+        degradedMvc.perform(post("/auth/todogi/forgot-password").contentType(MediaType.APPLICATION_JSON).content("{\"email\":\"a@b.co\"}"))
+                .andExpect(status().isNotFound());
+
+        org.springframework.context.ConfigurableApplicationContext context = mock(org.springframework.context.ConfigurableApplicationContext.class);
+        when(context.getBean(RealmRegistry.class)).thenReturn(realms);
+        degraded.reportConfiguration(new org.springframework.boot.context.event.ApplicationReadyEvent(
+                new org.springframework.boot.SpringApplication(), new String[0], context, Duration.ZERO));
+        assertThat(meters.find("auth.gateway.feature.degraded").tag("realm", "todogi").tag("feature", "verify").gauge().value()).isEqualTo(1.0);
+        assertThat(meters.find("auth.gateway.feature.degraded").tag("realm", "todogi").tag("feature", "reset").gauge().value()).isEqualTo(1.0);
     }
 
     private static FeignException feign(int status, String body) {

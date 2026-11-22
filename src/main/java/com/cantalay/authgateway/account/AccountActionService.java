@@ -28,6 +28,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
@@ -43,7 +44,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 
 import static com.cantalay.authgateway.realm.KeycloakErrors.maskEmail;
 
@@ -70,15 +75,18 @@ public class AccountActionService implements RegistrationHook {
     static final RateLimiter.Limit RESEND_PER_EMAIL_HOUR = new RateLimiter.Limit(5, Duration.ofHours(1));
     static final RateLimiter.Limit RESEND_PER_IP = new RateLimiter.Limit(20, Duration.ofHours(1));
     static final RateLimiter.Limit TOKEN_PER_IP = new RateLimiter.Limit(20, Duration.ofHours(1));
+    static final int LOCK_STRIPES = 64;
 
     /** How a realm confirms email addresses. */
     public enum VerifyMode {
         /** Gateway link into the app ({@code verifyUrl}). */
         GATEWAY,
-        /** Keycloak's own verification email (realms without {@code verifyUrl}; unchanged behavior). */
-        KEYCLOAK,
-        /** {@code verifyUrl} set but email or token keys missing: nothing is sent (logged at startup). */
-        OFF
+        /**
+         * Keycloak's own verification email: realms without {@code verifyUrl} (unchanged behavior), and realms whose
+         * {@code verifyUrl} cannot work because SMTP, the sender or the token keys are missing (degraded, see
+         * {@code auth_gateway_feature_degraded}).
+         */
+        KEYCLOAK
     }
 
     private static final Logger log = LoggerFactory.getLogger(AccountActionService.class);
@@ -92,6 +100,11 @@ public class AccountActionService implements RegistrationHook {
     private final RateLimiter limiter;
     private final MeterRegistry meters;
     private final Executor tasks;
+    private final RateLimiter.Limit registerPerIp;
+    private final RateLimiter.Limit registerPerEmail;
+    /** One password reset / confirmation at a time per user: the fingerprint is checked again under the lock. */
+    private final ReentrantLock[] userLocks = new ReentrantLock[LOCK_STRIPES];
+    private final Map<String, AtomicInteger> degraded = new ConcurrentHashMap<>();
 
     public AccountActionService(AuthAdminService adminService,
                                 KeycloakClient keycloak,
@@ -101,7 +114,27 @@ public class AccountActionService implements RegistrationHook {
                                 MailProperties mailProperties,
                                 RateLimiter limiter,
                                 MeterRegistry meters,
-                                @Qualifier("accountTaskExecutor") Executor tasks) {
+                                Executor tasks) {
+        this(adminService, keycloak, admin, tokens, mail, mailProperties, limiter, meters, tasks, 20, 5);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AccountActionService(AuthAdminService adminService,
+                                KeycloakClient keycloak,
+                                KeycloakAdminClient admin,
+                                ActionTokenService tokens,
+                                AccountMailService mail,
+                                MailProperties mailProperties,
+                                RateLimiter limiter,
+                                MeterRegistry meters,
+                                @Qualifier("accountTaskExecutor") Executor tasks,
+                                @Value("${gateway.register-limit.per-ip:20}") int registerPerIp,
+                                @Value("${gateway.register-limit.per-email:5}") int registerPerEmail) {
+        this.registerPerIp = new RateLimiter.Limit(registerPerIp, Duration.ofHours(1));
+        this.registerPerEmail = new RateLimiter.Limit(registerPerEmail, Duration.ofHours(1));
+        for (int i = 0; i < LOCK_STRIPES; i++) {
+            userLocks[i] = new ReentrantLock();
+        }
         this.adminService = adminService;
         this.keycloak = keycloak;
         this.admin = admin;
@@ -126,7 +159,26 @@ public class AccountActionService implements RegistrationHook {
         if (config == null || !StringUtils.hasText(config.getVerifyUrl())) {
             return VerifyMode.KEYCLOAK;
         }
-        return tokens.isConfigured() && mail.isEnabled(realm.name()) ? VerifyMode.GATEWAY : VerifyMode.OFF;
+        return verifyReady(realm) ? VerifyMode.GATEWAY : VerifyMode.KEYCLOAK;
+    }
+
+    private boolean verifyReady(RealmConfig realm) {
+        return tokens.isConfigured() && mail.isEnabled(realm.name());
+    }
+
+    /**
+     * {@code resend-verification} is opt-in: on with {@code verifyUrl}, or with {@code resendVerification=true} for
+     * realms that keep Keycloak's verification email.
+     */
+    public boolean resendEnabled(RealmConfig realm) {
+        MailProperties.Realm config = mailProperties.realm(realm.name());
+        if (config == null) {
+            return false;
+        }
+        if (config.getResendVerification() != null) {
+            return config.getResendVerification();
+        }
+        return StringUtils.hasText(config.getVerifyUrl());
     }
 
     /** A half-configured realm must be visible in the logs, but it must not take the shared gateway down. */
@@ -141,9 +193,14 @@ public class AccountActionService implements RegistrationHook {
             }
             boolean wantsReset = StringUtils.hasText(config.getResetUrl());
             boolean wantsVerify = StringUtils.hasText(config.getVerifyUrl());
-            if ((wantsReset && !resetEnabled(realm.get())) || (wantsVerify && verifyMode(realm.get()) != VerifyMode.GATEWAY)) {
+            boolean resetBroken = wantsReset && !resetEnabled(realm.get());
+            boolean verifyBroken = wantsVerify && !verifyReady(realm.get());
+            degradedGauge(realm.get().name(), "reset").set(resetBroken ? 1 : 0);
+            degradedGauge(realm.get().name(), "verify").set(verifyBroken ? 1 : 0);
+            if (resetBroken || verifyBroken) {
                 log.error("Realm {} asks for gateway account emails but SMTP_HOST, its FROM address or "
-                        + "GATEWAY_ACTION_TOKEN_SECRETS is missing; forgot-password and email confirmation stay off", name);
+                        + "GATEWAY_ACTION_TOKEN_SECRETS is missing; forgot-password stays off{}", name,
+                        verifyBroken ? ", email confirmation falls back to Keycloak's email" : "");
             } else if (wantsReset || wantsVerify) {
                 log.info("Realm {}: gateway password reset {}, email confirmation {}", name,
                         wantsReset ? "on" : "off", wantsVerify ? "on" : "keycloak");
@@ -160,7 +217,7 @@ public class AccountActionService implements RegistrationHook {
             throw new BaseAuthException(AuthError.REALM_FEATURE_DISABLED);
         }
         String address = normalizeEmail(email);
-        if (!limiter.tryAcquire("forgot-ip|" + realm.name() + "|" + clientIp, FORGOT_PER_IP)
+        if (!limiter.tryAcquire("forgot-ip|" + realm.name() + "|" + ipKey(clientIp), FORGOT_PER_IP)
                 || !limiter.tryAcquire("forgot-email|" + realm.name() + "|" + address, FORGOT_PER_EMAIL)) {
             count(realm, "forgot", "rate_limited");
             log.info("Forgot password in realm {} rate limited for {}", realm.name(), maskEmail(address));
@@ -186,7 +243,7 @@ public class AccountActionService implements RegistrationHook {
                 String link = link(config.getResetUrl(), tokens.issue(realm.name(), ActionPurpose.RESET, user.id(),
                         resetFingerprint(password.get())));
                 mail.send(realm.name(), MailTemplate.RESET, user.email(), language, Map.of(
-                        "name", nullToEmpty(user.firstName()),
+                        "name", greetingName(user),
                         "email", user.email(),
                         "duration", mail.templates().duration(language, tokens.ttl(ActionPurpose.RESET))
                 ), link, List.of());
@@ -204,7 +261,7 @@ public class AccountActionService implements RegistrationHook {
                 return;
             }
             mail.send(realm.name(), MailTemplate.RESET_SOCIAL, user.email(), language, Map.of(
-                    "name", nullToEmpty(user.firstName()),
+                    "name", greetingName(user),
                     "email", user.email(),
                     "providers", mail.templates().joinProviders(language, providers)
             ), emptyToNull(config.getAppUrl()), List.of());
@@ -218,8 +275,9 @@ public class AccountActionService implements RegistrationHook {
     /** 204 when the link can still be used, 410 {@code reset_token_invalid} otherwise. */
     public void checkResetToken(RealmConfig realm, String token, String clientIp) {
         requireReset(realm, "reset_check");
-        limitToken(realm, "reset_check", "reset-check-ip|" + realm.name() + "|" + clientIp);
-        resolveReset(realm, token, "reset_check");
+        limitToken(realm, "reset_check", "reset-check-ip|" + realm.name() + "|" + ipKey(clientIp));
+        resolveReset(realm, verifyToken(realm, token, ActionPurpose.RESET, "reset_check", AuthError.RESET_TOKEN_INVALID),
+                "reset_check");
         count(realm, "reset_check", "ok");
     }
 
@@ -232,8 +290,34 @@ public class AccountActionService implements RegistrationHook {
      */
     public Optional<TokenResponseDto> resetPassword(RealmConfig realm, String token, String newPassword, String clientIp) {
         requireReset(realm, "reset");
-        limitToken(realm, "reset", "reset-ip|" + realm.name() + "|" + clientIp);
-        ResetTarget target = resolveReset(realm, token, "reset");
+        limitToken(realm, "reset", "reset-ip|" + realm.name() + "|" + ipKey(clientIp));
+        ActionToken verified = verifyToken(realm, token, ActionPurpose.RESET, "reset", AuthError.RESET_TOKEN_INVALID);
+        ResetOutcome outcome = underUserLock(verified.subject(), () -> applyReset(realm, verified, newPassword));
+        KeycloakUserDto user = outcome.user();
+
+        MailProperties.Realm config = mailProperties.realm(realm.name());
+        String language = language(config, null, user);
+        if (StringUtils.hasText(user.email())) {
+            tasks.execute(() -> mail.send(realm.name(), MailTemplate.PASSWORD_CHANGED, user.email(), language, Map.of(
+                    "name", greetingName(user),
+                    "email", user.email()
+            ), config.getResetUrl(), List.of()));
+        }
+        if (!outcome.sessionsEnded()) {
+            // The attacker's refresh/offline tokens may still live: no new session, the user must try again.
+            count(realm, "reset", "sessions_failed");
+            throw new BaseAuthException(AuthError.SESSIONS_REVOKE_FAILED);
+        }
+        count(realm, "reset", "ok");
+        return signIn(realm, user.username() != null ? user.username() : user.email(), newPassword);
+    }
+
+    private record ResetOutcome(KeycloakUserDto user, boolean sessionsEnded) {
+    }
+
+    /** Runs under the user's lock, so a second request with the same link sees the new credential and gets 410. */
+    private ResetOutcome applyReset(RealmConfig realm, ActionToken verified, String newPassword) {
+        ResetTarget target = resolveReset(realm, verified, "reset");
         String bearer = "Bearer " + target.adminToken();
         String userId = target.user().id();
 
@@ -254,47 +338,59 @@ public class AccountActionService implements RegistrationHook {
             throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
         }
 
-        endSessions(realm, userId, bearer);
+        boolean sessionsEnded = endSessions(realm, userId, bearer);
         try {
             admin.clearBruteForce(realm.name(), userId, bearer);
         } catch (FeignException e) {
             log.warn("Password reset in realm {}: clearing lockout of user {} failed: HTTP {}", realm.name(), userId, e.status());
         }
-        count(realm, "reset", "ok");
-        log.info("Password reset in realm {} for user {}", realm.name(), userId);
-
-        KeycloakUserDto user = target.user();
-        MailProperties.Realm config = mailProperties.realm(realm.name());
-        String language = language(config, null, user);
-        if (StringUtils.hasText(user.email())) {
-            tasks.execute(() -> mail.send(realm.name(), MailTemplate.PASSWORD_CHANGED, user.email(), language, Map.of(
-                    "name", nullToEmpty(user.firstName()),
-                    "email", user.email()
-            ), config.getResetUrl(), List.of()));
-        }
-
-        return signIn(realm, user.username() != null ? user.username() : user.email(), newPassword);
+        log.info("Password reset in realm {} for user {} (sessions ended: {})", realm.name(), userId, sessionsEnded);
+        return new ResetOutcome(target.user(), sessionsEnded);
     }
 
-    /** Online sessions via logout; offline tokens (mobile apps) via the gateway clients' consents. */
-    private void endSessions(RealmConfig realm, String userId, String bearer) {
-        try {
-            admin.logoutUser(realm.name(), userId, bearer);
-        } catch (FeignException e) {
-            log.error("Password reset in realm {}: ending sessions of user {} failed: HTTP {}", realm.name(), userId, e.status());
-        }
+    /**
+     * Online sessions via logout; offline tokens (mobile apps) via the gateway clients' consents. Each call is tried
+     * twice; {@code false} when one still failed (the caller must not open a new session then).
+     */
+    private boolean endSessions(RealmConfig realm, String userId, String bearer) {
+        boolean ok = retryOnce(() -> admin.logoutUser(realm.name(), userId, bearer),
+                "ending sessions", realm, userId);
         List<String> clients = new ArrayList<>(List.of(realm.clientId()));
         if (realm.platformClientId() != null) {
             clients.add(realm.platformClientId());
         }
         for (String clientId : clients) {
+            ok &= retryOnce(() -> admin.revokeConsent(realm.name(), userId, clientId, bearer),
+                    "revoking offline tokens", realm, userId);
+        }
+        return ok;
+    }
+
+    private boolean retryOnce(Runnable call, String what, RealmConfig realm, String userId) {
+        for (int attempt = 1; attempt <= 2; attempt++) {
             try {
-                admin.revokeConsent(realm.name(), userId, clientId, bearer);
+                call.run();
+                return true;
             } catch (FeignException.NotFound e) {
-                // no offline token for this client
+                return true; // nothing to end (no offline token for this client)
             } catch (FeignException e) {
-                log.error("Password reset in realm {}: revoking offline tokens of user {} failed: HTTP {}", realm.name(), userId, e.status());
+                log.error("Password reset in realm {}: {} of user {} failed (attempt {}): HTTP {}", realm.name(), what,
+                        userId, attempt, e.status());
+            } catch (RuntimeException e) {
+                log.error("Password reset in realm {}: {} of user {} failed (attempt {}): {}", realm.name(), what,
+                        userId, attempt, e.getClass().getSimpleName());
             }
+        }
+        return false;
+    }
+
+    private <T> T underUserLock(String userId, Supplier<T> work) {
+        ReentrantLock lock = userLocks[Math.floorMod(userId.hashCode(), LOCK_STRIPES)];
+        lock.lock();
+        try {
+            return work.get();
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -313,8 +409,7 @@ public class AccountActionService implements RegistrationHook {
         }
     }
 
-    private ResetTarget resolveReset(RealmConfig realm, String token, String action) {
-        ActionToken verified = verifyToken(realm, token, ActionPurpose.RESET, action, AuthError.RESET_TOKEN_INVALID);
+    private ResetTarget resolveReset(RealmConfig realm, ActionToken verified, String action) {
         String adminToken = adminToken(realm);
         KeycloakUserDto user = userById(realm, adminToken, verified.subject(), action, AuthError.RESET_TOKEN_INVALID);
         Optional<KeycloakCredentialDto> password;
@@ -339,13 +434,13 @@ public class AccountActionService implements RegistrationHook {
 
     /** Always returns normally (202); the lookup and email happen in the background. */
     public void resendVerification(RealmConfig realm, String email, String locale, String clientIp) {
-        VerifyMode mode = verifyMode(realm);
-        if (mode == VerifyMode.OFF) {
+        if (!resendEnabled(realm)) {
             count(realm, "resend", "disabled");
-            return;
+            throw new BaseAuthException(AuthError.REALM_FEATURE_DISABLED);
         }
+        VerifyMode mode = verifyMode(realm);
         String address = normalizeEmail(email);
-        if (!limiter.tryAcquire("resend-ip|" + realm.name() + "|" + clientIp, RESEND_PER_IP)
+        if (!limiter.tryAcquire("resend-ip|" + realm.name() + "|" + ipKey(clientIp), RESEND_PER_IP)
                 || !limiter.tryAcquire(resendKey(realm, address), RESEND_PER_EMAIL_MINUTE, RESEND_PER_EMAIL_HOUR)) {
             count(realm, "resend", "rate_limited");
             log.info("Verification email in realm {} rate limited for {}", realm.name(), maskEmail(address));
@@ -381,8 +476,16 @@ public class AccountActionService implements RegistrationHook {
             count(realm, "verify", "disabled");
             throw new BaseAuthException(AuthError.REALM_FEATURE_DISABLED);
         }
-        limitToken(realm, "verify", "verify-ip|" + realm.name() + "|" + clientIp);
+        limitToken(realm, "verify", "verify-ip|" + realm.name() + "|" + ipKey(clientIp));
         ActionToken verified = verifyToken(realm, token, ActionPurpose.VERIFY, "verify", AuthError.VERIFY_TOKEN_INVALID);
+        underUserLock(verified.subject(), () -> {
+            confirmEmail(realm, verified);
+            return null;
+        });
+    }
+
+    /** Under the user's lock: the address is compared with the account's current one right before the update. */
+    private void confirmEmail(RealmConfig realm, ActionToken verified) {
         String adminToken = adminToken(realm);
         KeycloakUserDto user = userById(realm, adminToken, verified.subject(), "verify", AuthError.VERIFY_TOKEN_INVALID);
         if (!sameFingerprint(ActionTokenService.emailFingerprint(user.email()), verified.fingerprint())) {
@@ -411,7 +514,7 @@ public class AccountActionService implements RegistrationHook {
         String link = link(config.getVerifyUrl(), tokens.issue(realm.name(), ActionPurpose.VERIFY, user.id(),
                 ActionTokenService.emailFingerprint(user.email())));
         mail.send(realm.name(), MailTemplate.VERIFY, user.email(), language, Map.of(
-                "name", nullToEmpty(user.firstName()),
+                "name", greetingName(user),
                 "email", user.email(),
                 "duration", mail.templates().duration(language, tokens.ttl(ActionPurpose.VERIFY))
         ), link, List.of());
@@ -448,39 +551,63 @@ public class AccountActionService implements RegistrationHook {
         return Map.of("locale", List.of(locale));
     }
 
+    /** Registration limits (all realms): 429 {@code rate_limited} beyond them. */
+    @Override
+    public void beforeRegistration(RealmConfig realm, RegisterRequest request, String clientIp) {
+        boolean allowed = (clientIp == null || limiter.tryAcquire("register-ip|" + realm.name() + "|" + ipKey(clientIp), registerPerIp))
+                && limiter.tryAcquire("register-email|" + realm.name() + "|" + normalizeEmail(request.email()), registerPerEmail);
+        if (!allowed) {
+            count(realm, "register", "rate_limited");
+            throw new BaseAuthException(AuthError.RATE_LIMITED);
+        }
+    }
+
     @Override
     public void registered(RealmConfig realm, KeycloakUserDto user, String adminToken, RegisterRequest request) {
-        boolean verificationSent = false;
-        switch (verifyMode(realm)) {
-            case GATEWAY -> {
-                // Counts as the first send so "send again" waits a minute, as the app's countdown shows.
-                limiter.tryAcquire(resendKey(realm, normalizeEmail(user.email())), RESEND_PER_EMAIL_MINUTE, RESEND_PER_EMAIL_HOUR);
-                tasks.execute(() -> {
-                    try {
-                        sendVerifyEmail(realm, user, request.locale());
-                    } catch (RuntimeException e) {
-                        log.error("Verification email in realm {} failed: {}", realm.name(), e.getClass().getSimpleName());
-                    }
-                });
-                verificationSent = true;
-            }
-            case KEYCLOAK -> {
-                limiter.tryAcquire(resendKey(realm, normalizeEmail(user.email())), RESEND_PER_EMAIL_MINUTE, RESEND_PER_EMAIL_HOUR);
-                verificationSent = sendKeycloakVerification(realm, user.id(), adminToken);
-            }
-            case OFF -> log.warn("Registration in realm {}: email confirmation is not configured", realm.name());
+        // Counts as the first send so "send again" waits a minute, as the app's countdown shows.
+        limiter.tryAcquire(resendKey(realm, normalizeEmail(user.email())), RESEND_PER_EMAIL_MINUTE, RESEND_PER_EMAIL_HOUR);
+        boolean verificationSent;
+        if (verifyMode(realm) == VerifyMode.GATEWAY) {
+            tasks.execute(() -> {
+                try {
+                    sendVerifyEmail(realm, user, request.locale());
+                } catch (RuntimeException e) {
+                    log.error("Verification email in realm {} failed: {}", realm.name(), e.getClass().getSimpleName());
+                }
+            });
+            verificationSent = true;
+        } else {
+            verificationSent = sendKeycloakVerification(realm, user.id(), adminToken);
         }
         if (mail.isEnabled(realm.name())) {
             MailProperties.Realm config = mailProperties.realm(realm.name());
             String language = language(config, request.locale(), user);
             List<String> extra = verificationSent ? List.of("verify") : List.of();
-            String firstName = StringUtils.hasText(user.firstName()) ? user.firstName() : request.firstName();
-            tasks.execute(() -> mail.send(realm.name(), MailTemplate.WELCOME, user.email() != null ? user.email() : request.email(),
-                    language, Map.of("name", nullToEmpty(firstName)), emptyToNull(config.getAppUrl()), extra));
+            String to = user.email() != null ? user.email() : request.email();
+            // No name: whoever registers chooses it, and the email goes to an address nobody has confirmed yet.
+            tasks.execute(() -> mail.send(realm.name(), MailTemplate.WELCOME, to, language, Map.of(),
+                    emptyToNull(config.getAppUrl()), extra));
         }
     }
 
     /* ======================= helpers ======================= */
+
+    /**
+     * Name for the greeting, only once the address owner confirmed the account: before that the name is whatever the
+     * registering person typed, and the email may reach someone else.
+     */
+    static String greetingName(KeycloakUserDto user) {
+        return Boolean.TRUE.equals(user.emailVerified()) ? nullToEmpty(user.firstName()) : "";
+    }
+
+    private static String ipKey(String clientIp) {
+        return ClientIp.rateKey(clientIp);
+    }
+
+    private AtomicInteger degradedGauge(String realm, String feature) {
+        return degraded.computeIfAbsent(realm + "|" + feature, k -> meters.gauge("auth.gateway.feature.degraded",
+                io.micrometer.core.instrument.Tags.of("realm", realm, "feature", feature), new AtomicInteger()));
+    }
 
     private void requireReset(RealmConfig realm, String action) {
         if (!resetEnabled(realm)) {
