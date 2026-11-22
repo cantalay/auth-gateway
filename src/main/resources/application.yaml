@@ -2,7 +2,7 @@ spring:
   application:
     name: auth-gateway
   mail:
-    # Hoşgeldin maili için SMTP (Vault). SMTP_HOST boşsa gateway mail göndermez.
+    # Gateway e-postaları (hoş geldin, doğrulama, parola sıfırlama) için SMTP (Vault). SMTP_HOST boşsa gateway mail göndermez.
     host: ${SMTP_HOST:}
     port: ${SMTP_PORT:465}
     username: ${SMTP_USERNAME:}
@@ -21,9 +21,19 @@ keycloak:
   realm: ${KEYCLOAK_REALM}
   issuer-uri: ${KEYCLOAK_ISSUER_URI:}
   client-id: ${KEYCLOAK_CLIENT_ID:auth}
+  # Varsayılan realm'de login offline_access ister (ek realm'lerde GATEWAY_REALMS_<REALM>_OFFLINEACCESS).
+  offline-access: ${KEYCLOAK_OFFLINE_ACCESS:false}
   admin:
     client-id: ${KEYCLOAK_ADMIN_CLIENT_ID}
     client-secret: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
+
+gateway:
+  action-token:
+    # Parola sıfırlama / e-posta onay bağlantılarının HMAC anahtarları: "k2:<base64 32+ bayt>,k1:<...>" (ilki imzalar,
+    # hepsi doğrular). Boşsa bu bağlantılar ve onlara bağlı realm özellikleri kapalı.
+    secrets: ${GATEWAY_ACTION_TOKEN_SECRETS:}
+    reset-ttl: 60m
+    verify-ttl: 24h
 
 otel:
   exporter:

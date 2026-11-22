@@ -6,33 +6,55 @@ import com.cantalay.authgateway.domain.PlatformLoginRequest;
 import com.cantalay.authgateway.domain.*;
 import com.cantalay.authgateway.exception.AuthError;
 import com.cantalay.authgateway.exception.BaseAuthException;
-import com.cantalay.authgateway.mail.MailProperties;
-import com.cantalay.authgateway.mail.WelcomeMailService;
 import com.cantalay.authgateway.realm.KeycloakErrors;
 import com.cantalay.authgateway.realm.RealmConfig;
 import feign.FeignException;
-import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import static com.cantalay.authgateway.realm.KeycloakErrors.maskEmail;
 
 @Service
-@RequiredArgsConstructor
 public class AuthService {
 
     private static final Logger log = LoggerFactory.getLogger(AuthService.class);
     private final AuthAdminService adminService;
     private final KeycloakClient keycloakClient;
     private final KeycloakAdminClient keycloakAdminClient;
-    private final WelcomeMailService welcomeMailService;
-    private final MailProperties mailProperties;
+    private final RegistrationHook registrationHook;
+
+    @Autowired
+    public AuthService(AuthAdminService adminService, KeycloakClient keycloakClient,
+                       KeycloakAdminClient keycloakAdminClient, RegistrationHook registrationHook) {
+        this.adminService = adminService;
+        this.keycloakClient = keycloakClient;
+        this.keycloakAdminClient = keycloakAdminClient;
+        this.registrationHook = registrationHook;
+    }
+
+    /** Without account emails: registration asks Keycloak for its verification email (the original behavior). */
+    public AuthService(AuthAdminService adminService, KeycloakClient keycloakClient, KeycloakAdminClient keycloakAdminClient) {
+        this(adminService, keycloakClient, keycloakAdminClient, keycloakVerification(keycloakAdminClient));
+    }
+
+    static RegistrationHook keycloakVerification(KeycloakAdminClient admin) {
+        return (realm, user, adminToken, request) -> {
+            try {
+                admin.sendVerificationEmail(realm.name(), user.id(), "Bearer " + adminToken, null, null);
+                log.info("Verification email sent in realm {} to user {}", realm.name(), user.id());
+            } catch (FeignException e) {
+                log.error("Failed to send verification email in realm {} to user {}: HTTP {}", realm.name(), user.id(), e.status());
+            }
+        };
+    }
 
     public TokenResponseDto login(RealmConfig realm, LoginRequest request) {
 
@@ -99,7 +121,7 @@ public class AuthService {
 
         String token = adminService.getAdminAccessToken(realm);
 
-        Map<String, Object> payload = Map.of(
+        Map<String, Object> payload = new LinkedHashMap<>(Map.of(
                 "username", request.email(),
                 "email", request.email(),
                 "firstName", request.firstName(),
@@ -113,7 +135,11 @@ public class AuthService {
                                 "temporary", false
                         )
                 )
-        );
+        ));
+        Map<String, List<String>> attributes = registrationHook.userAttributes(realm, request);
+        if (!attributes.isEmpty()) {
+            payload.put("attributes", attributes);
+        }
 
         try {
             keycloakAdminClient.createUser(
@@ -131,17 +157,16 @@ public class AuthService {
             );
 
             if (!users.isEmpty()) {
-                KeycloakUserDto user = users.get(0);
-                String userId = user.id();
-                log.info("Sending verification email in realm {} to user {}", realm.name(), userId);
-
-                // Send verification email (Keycloak) — failures don't fail registration,
-                // the user can ask for it again via /resend-verification.
-                sendVerification(realm, userId, token);
+                // Verification (gateway link or Keycloak email) and welcome emails; failures don't fail registration,
+                // the user can ask for the verification email again via /resend-verification.
+                try {
+                    registrationHook.registered(realm, users.get(0), token, request);
+                } catch (RuntimeException e) {
+                    log.error("Post-registration emails failed in realm {}: {}", realm.name(), e.getClass().getSimpleName());
+                }
             } else {
                 log.warn("User created in realm {} but could not be found by email {}", realm.name(), maskEmail(request.email()));
             }
-            welcomeMailService.sendWelcome(realm.name(), request.email(), request.firstName());
         } catch (FeignException.Conflict e) {
             throw new BaseAuthException(AuthError.USER_ALREADY_EXISTS);
         } catch (FeignException.BadRequest e) {
@@ -153,44 +178,6 @@ public class AuthService {
         } catch (FeignException e) {
             throw new BaseAuthException(AuthError.AUTH_SERVICE_UNAVAILABLE);
         }
-    }
-
-    /**
-     * Re-sends the Keycloak verification email when the address belongs to an unverified user.
-     * Never reveals whether the address is registered.
-     */
-    public void resendVerification(RealmConfig realm, ResendVerificationRequest request) {
-        try {
-            String token = adminService.getAdminAccessToken(realm);
-            List<KeycloakUserDto> users = keycloakAdminClient.getUsersByEmail(
-                    realm.name(), "Bearer " + token, request.email(), true);
-            users.stream()
-                    .filter(user -> !Boolean.TRUE.equals(user.emailVerified()))
-                    .findFirst()
-                    .ifPresent(user -> sendVerification(realm, user.id(), token));
-        } catch (FeignException e) {
-            log.error("Resend verification failed in realm {}: HTTP {}", realm.name(), e.status());
-        }
-    }
-
-    private void sendVerification(RealmConfig realm, String userId, String adminToken) {
-        MailProperties.Realm mail = mailProperties.realm(realm.name());
-        String clientId = mail == null ? null : emptyToNull(mail.getVerifyClientId());
-        String redirectUri = mail == null ? null : emptyToNull(mail.getVerifyRedirectUri());
-        if (clientId == null || redirectUri == null) {
-            clientId = null;
-            redirectUri = null;
-        }
-        try {
-            keycloakAdminClient.sendVerificationEmail(realm.name(), userId, "Bearer " + adminToken, clientId, redirectUri);
-            log.info("Verification email sent in realm {} to user {}", realm.name(), userId);
-        } catch (FeignException e) {
-            log.error("Failed to send verification email in realm {} to user {}: HTTP {}", realm.name(), userId, e.status());
-        }
-    }
-
-    private static String emptyToNull(String value) {
-        return value == null || value.isBlank() ? null : value;
     }
 
     public void updateProfile(RealmConfig realm, String userId, UpdateProfileRequest request) {

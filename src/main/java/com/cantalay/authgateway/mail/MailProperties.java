@@ -1,21 +1,31 @@
 package com.cantalay.authgateway.mail;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
  * Per-realm email settings, e.g.
  * <pre>
- * GATEWAY_MAIL_REALMS_TODOGI_FROM=todogi@singlestranger.com
- * GATEWAY_MAIL_REALMS_TODOGI_FROMNAME=Todogi
- * GATEWAY_MAIL_REALMS_TODOGI_APPNAME=Todogi
- * GATEWAY_MAIL_REALMS_TODOGI_APPURL=https://todogi.singlestranger.com
- * GATEWAY_MAIL_REALMS_TODOGI_VERIFYCLIENTID=...      (opsiyonel: doğrulama sonrası uygulamaya dönüş)
+ * GATEWAY_MAIL_REALMS_TODOGI_FROM=noreply@todogi.net
+ * GATEWAY_MAIL_REALMS_TODOGI_FROMNAME=ToDoGi
+ * GATEWAY_MAIL_REALMS_TODOGI_APPNAME=ToDoGi
+ * GATEWAY_MAIL_REALMS_TODOGI_APPURL=https://todogi.net
+ * GATEWAY_MAIL_REALMS_TODOGI_RESETURL=https://todogi.net/sifre-sifirla   (forgot/reset password through the gateway)
+ * GATEWAY_MAIL_REALMS_TODOGI_VERIFYURL=https://todogi.net/eposta-onay    (email confirmation through the gateway)
+ * GATEWAY_MAIL_REALMS_TODOGI_LOCALES=tr,en
+ * GATEWAY_MAIL_REALMS_TODOGI_DEFAULTLOCALE=tr
+ * GATEWAY_MAIL_REALMS_TODOGI_SUPPORTEMAIL=destek@todogi.net             (optional footer line)
+ * GATEWAY_MAIL_REALMS_TODOGI_VERIFYCLIENTID=...      (Keycloak verification only: return to the app afterwards)
  * GATEWAY_MAIL_REALMS_TODOGI_VERIFYREDIRECTURI=...
  * </pre>
- * A realm without {@code from} gets no welcome email.
+ * A realm without {@code from} gets no email from the gateway. Links carry the token in the fragment
+ * ({@code <url>#t=<token>}) so it never reaches access logs or {@code Referer} headers.
  */
 @ConfigurationProperties(prefix = "gateway.mail")
 public class MailProperties {
@@ -26,7 +36,18 @@ public class MailProperties {
     public void setRealms(Map<String, Realm> realms) { this.realms = realms; }
 
     public Realm realm(String name) {
-        return realms.get(name.toLowerCase());
+        return realms.get(name.toLowerCase(Locale.ROOT));
+    }
+
+    /** {@code "tr-TR"} / {@code "tr_TR"} → {@code "tr"}; {@code null} for anything that is not a language code. */
+    public static String normalizeLocale(String locale) {
+        if (!StringUtils.hasText(locale)) {
+            return null;
+        }
+        String l = locale.trim().replace('_', '-').toLowerCase(Locale.ROOT);
+        int dash = l.indexOf('-');
+        String language = dash > 0 ? l.substring(0, dash) : l;
+        return language.matches("[a-z]{2,3}") ? language : null;
     }
 
     public static class Realm {
@@ -36,6 +57,11 @@ public class MailProperties {
         private String appUrl;
         private String verifyClientId;
         private String verifyRedirectUri;
+        private String resetUrl;
+        private String verifyUrl;
+        private List<String> locales = new ArrayList<>();
+        private String defaultLocale;
+        private String supportEmail;
 
         public String getFrom() { return from; }
         public void setFrom(String from) { this.from = from; }
@@ -49,5 +75,42 @@ public class MailProperties {
         public void setVerifyClientId(String verifyClientId) { this.verifyClientId = verifyClientId; }
         public String getVerifyRedirectUri() { return verifyRedirectUri; }
         public void setVerifyRedirectUri(String verifyRedirectUri) { this.verifyRedirectUri = verifyRedirectUri; }
+        public String getResetUrl() { return resetUrl; }
+        public void setResetUrl(String resetUrl) { this.resetUrl = resetUrl; }
+        public String getVerifyUrl() { return verifyUrl; }
+        public void setVerifyUrl(String verifyUrl) { this.verifyUrl = verifyUrl; }
+        public List<String> getLocales() { return locales; }
+        public void setLocales(List<String> locales) { this.locales = locales; }
+        public String getDefaultLocale() { return defaultLocale; }
+        public void setDefaultLocale(String defaultLocale) { this.defaultLocale = defaultLocale; }
+        public String getSupportEmail() { return supportEmail; }
+        public void setSupportEmail(String supportEmail) { this.supportEmail = supportEmail; }
+
+        /** Default email language: {@code defaultLocale}, else the first configured locale, else Turkish. */
+        public String effectiveDefaultLocale() {
+            String normalized = normalizeLocale(defaultLocale);
+            return normalized != null ? normalized : supportedLocales().get(0);
+        }
+
+        /** Languages the realm's emails may use, normalized ({@code "tr-TR"} → {@code "tr"}). */
+        public List<String> supportedLocales() {
+            List<String> result = new ArrayList<>();
+            if (locales != null) {
+                for (String locale : locales) {
+                    String n = normalizeLocale(locale);
+                    if (n != null && !result.contains(n)) {
+                        result.add(n);
+                    }
+                }
+            }
+            String normalizedDefault = normalizeLocale(defaultLocale);
+            if (normalizedDefault != null && !result.contains(normalizedDefault)) {
+                result.add(normalizedDefault);
+            }
+            if (result.isEmpty()) {
+                result.add("tr");
+            }
+            return result;
+        }
     }
 }

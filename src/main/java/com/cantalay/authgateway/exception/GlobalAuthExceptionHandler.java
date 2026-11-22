@@ -31,7 +31,9 @@ public class GlobalAuthExceptionHandler {
                 .status(ex.getStatus().value())
                 .error(ex.getStatus().getReasonPhrase())
                 .message(ex.getMessage())
+                .code(ex.getCode())
                 .path(request.getRequestURI())
+                .validationErrors(ex.getDetails())
                 .build();
 
         return ResponseEntity
@@ -60,6 +62,27 @@ public class GlobalAuthExceptionHandler {
                 .message("Validation failed")
                 .path(request.getRequestURI())
                 .validationErrors(validationErrors)
+                .build();
+
+        return ResponseEntity
+                .status(400)
+                .body(ApiResponse.error(errorDetails));
+    }
+
+    /** Missing or malformed JSON body: a client error, not a 500. */
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleUnreadableBody(
+            org.springframework.http.converter.HttpMessageNotReadableException ex,
+            HttpServletRequest request) {
+
+        log.warn("Unreadable request body on {}", request.getRequestURI());
+
+        ErrorDetails errorDetails = ErrorDetails.builder()
+                .timestamp(LocalDateTime.now())
+                .status(400)
+                .error("Bad Request")
+                .message("Malformed request body")
+                .path(request.getRequestURI())
                 .build();
 
         return ResponseEntity
