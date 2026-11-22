@@ -10,10 +10,10 @@ import java.time.ZoneOffset;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class RateLimiterTest {
+public class RateLimiterTest {
 
-    static final class MutableClock extends Clock {
-        Instant now = Instant.parse("2026-11-22T10:00:00Z");
+    public static final class MutableClock extends Clock {
+        public Instant now = Instant.parse("2026-11-22T10:00:00Z");
 
         @Override public ZoneId getZone() { return ZoneOffset.UTC; }
         @Override public Clock withZone(ZoneId zone) { return this; }
@@ -69,5 +69,17 @@ class RateLimiterTest {
             limiter.tryAcquire("fresh" + i, limit);
         }
         assertThat(limiter.size()).isLessThan(1000);
+    }
+
+    @Test
+    void neverHoldsMoreThanItsBound() {
+        MutableClock clock = new MutableClock();
+        RateLimiter limiter = new RateLimiter(clock, 100);
+        RateLimiter.Limit limit = new RateLimiter.Limit(1, Duration.ofMinutes(1));
+        for (int i = 0; i < 10_000; i++) {
+            limiter.tryAcquire("k" + i, limit);
+        }
+        assertThat(limiter.size()).isLessThanOrEqualTo(100);
+        assertThat(limiter.tryAcquire("k9999", limit)).isFalse(); // recent keys survive
     }
 }
