@@ -3,13 +3,14 @@ package com.cantalay.authgateway.controller;
 import com.cantalay.authgateway.domain.*;
 import com.cantalay.authgateway.exception.AuthError;
 import com.cantalay.authgateway.exception.BaseAuthException;
+import com.cantalay.authgateway.identity.IdentityMethodsService;
 import com.cantalay.authgateway.realm.RealmConfig;
 import com.cantalay.authgateway.realm.RealmRegistry;
 import com.cantalay.authgateway.service.AuthService;
 import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -23,12 +24,24 @@ import static com.cantalay.authgateway.realm.KeycloakErrors.maskEmail;
  */
 @RestController
 @RequestMapping("/auth")
-@RequiredArgsConstructor
 public class AuthController {
 
     private static final Logger log = LoggerFactory.getLogger(AuthController.class);
     private final AuthService authService;
     private final RealmRegistry realms;
+    /** {@code null} without identity methods: {@code /social} then behaves as in realms where they are off. */
+    private final IdentityMethodsService identityMethods;
+
+    public AuthController(AuthService authService, RealmRegistry realms) {
+        this(authService, realms, null);
+    }
+
+    @Autowired
+    public AuthController(AuthService authService, RealmRegistry realms, IdentityMethodsService identityMethods) {
+        this.authService = authService;
+        this.realms = realms;
+        this.identityMethods = identityMethods;
+    }
 
     @PostMapping({"/login", "/{realm}/login"})
     public TokenResponseDto login(@PathVariable(required = false) String realm,
@@ -109,12 +122,20 @@ public class AuthController {
     https://auth.cantalay.com/realms/<realm>/protocol/openid-connect/auth
     ?client_id=<realm client>&response_type=code&scope=openid%20profile%20email&
     redirect_uri=<app>://callback&kc_idp_hint=google
-    and posts the returned code here.
+    and posts the returned code here. With identity methods on, mode=link (and the account's Bearer token) adds the
+    provider to the signed-in account instead (IdentityMethodsService).
      */
     @PostMapping({"/social", "/{realm}/social"})
     public TokenResponseDto socialLogin(@PathVariable(required = false) String realm,
                                         @Valid @RequestBody SocialLoginRequest request) {
         RealmConfig config = realms.resolve(realm);
+        if (identityMethods != null) {
+            log.info("Social {} attempt in realm {}", "link".equals(request.mode()) ? "link" : "login", config.name());
+            return identityMethods.social(config, bearerToken(), request);
+        }
+        if ("link".equals(request.mode())) {
+            throw new BaseAuthException(AuthError.REALM_FEATURE_DISABLED);
+        }
         log.info("Social login attempt in realm {}", config.name());
         return authService.socialLogin(config, request);
     }
@@ -142,6 +163,16 @@ public class AuthController {
     public java.util.Map<String, Boolean> platformLinks(@PathVariable(required = false) String realm,
                                                         @AuthenticationPrincipal Jwt jwt) {
         return authService.platformLinks(realmOf(realm, jwt), jwt.getTokenValue());
+    }
+
+    /**
+     * Access token of a request to a public endpoint ({@code /social}), {@code null} without one. Spring Security
+     * authenticates a Bearer token on every path (an invalid one is 401 before the controller, as before).
+     */
+    private static Jwt bearerToken() {
+        org.springframework.security.core.Authentication authentication =
+                org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        return authentication != null && authentication.getPrincipal() instanceof Jwt jwt ? jwt : null;
     }
 
     /** The token must have been issued by the realm addressed in the path. */

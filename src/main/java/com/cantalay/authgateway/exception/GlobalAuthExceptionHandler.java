@@ -34,6 +34,7 @@ public class GlobalAuthExceptionHandler {
                 .code(ex.getCode())
                 .path(request.getRequestURI())
                 .validationErrors(ex.getDetails())
+                .email(ex.getEmail())
                 .build();
 
         return ResponseEntity

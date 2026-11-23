@@ -17,6 +17,7 @@ import java.util.Map;
  * GATEWAY_REALMS_HELLO_OFFLINEACCESS=true                     (default: false; login asks for offline_access)
  * GATEWAY_REALMS_HELLO_PLATFORMLOGIN=true                     (default: false; Game Center / Play Games via &lt;realm&gt;-platform)
  * GATEWAY_REALMS_HELLO_PLATFORMCLIENTID=hello-platform        (default: &lt;realm&gt;-platform)
+ * GATEWAY_REALMS_HELLO_IDENTITYMETHODS=true                   (default: false; /identities, /social mode=link)
  * </pre>
  */
 @ConfigurationProperties(prefix = "gateway")
@@ -40,6 +41,7 @@ public class GatewayProperties {
         private boolean offlineAccess;
         private boolean platformLogin;
         private String platformClientId;
+        private boolean identityMethods;
 
         public String getClientId() { return clientId; }
         public void setClientId(String clientId) { this.clientId = clientId; }
@@ -55,5 +57,7 @@ public class GatewayProperties {
         public void setPlatformLogin(boolean platformLogin) { this.platformLogin = platformLogin; }
         public String getPlatformClientId() { return platformClientId; }
         public void setPlatformClientId(String platformClientId) { this.platformClientId = platformClientId; }
+        public boolean isIdentityMethods() { return identityMethods; }
+        public void setIdentityMethods(boolean identityMethods) { this.identityMethods = identityMethods; }
     }
 }

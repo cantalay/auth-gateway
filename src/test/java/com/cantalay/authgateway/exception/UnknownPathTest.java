@@ -92,5 +92,11 @@ class UnknownPathTest {
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.error.message").value("Unexpected authentication error."))
                 .andExpect(jsonPath("$.error.code").doesNotExist());
+        // an identity method error carries no email unless it is about one
+        mvc.perform(post("/auth/todogi/social").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"c\",\"redirectUri\":\"app://cb\",\"mode\":\"link\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("realm_feature_disabled"))
+                .andExpect(jsonPath("$.error.email").doesNotExist());
     }
 }

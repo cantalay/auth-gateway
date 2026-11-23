@@ -35,6 +35,18 @@ public class RealmRegistry {
      *                             {@code offline_access} (as {@code GATEWAY_REALMS_<REALM>_OFFLINEACCESS} does for the
      *                             other realms); off by default
      */
+    public RealmRegistry(String baseUrl, String defaultRealm, String defaultClientId, String defaultAdminClientId,
+                         String defaultAdminClientSecret, String defaultIssuerUri, boolean defaultOfflineAccess,
+                         GatewayProperties properties) {
+        this(baseUrl, defaultRealm, defaultClientId, defaultAdminClientId, defaultAdminClientSecret, defaultIssuerUri,
+                defaultOfflineAccess, false, properties);
+    }
+
+    /**
+     * @param defaultIdentityMethods {@code KEYCLOAK_IDENTITY_METHODS}: sign-in method endpoints in the default realm
+     *                               (as {@code GATEWAY_REALMS_<REALM>_IDENTITYMETHODS} does for the other realms); off
+     *                               by default
+     */
     @Autowired
     public RealmRegistry(
             @Value("${keycloak.base-url}") String baseUrl,
@@ -44,6 +56,7 @@ public class RealmRegistry {
             @Value("${keycloak.admin.client-secret}") String defaultAdminClientSecret,
             @Value("${keycloak.issuer-uri:}") String defaultIssuerUri,
             @Value("${keycloak.offline-access:false}") boolean defaultOfflineAccess,
+            @Value("${keycloak.identity-methods:false}") boolean defaultIdentityMethods,
             GatewayProperties properties
     ) {
         String base = trimTrailingSlash(baseUrl);
@@ -54,7 +67,9 @@ public class RealmRegistry {
                 defaultAdminClientId,
                 defaultAdminClientSecret,
                 StringUtils.hasText(defaultIssuerUri) ? defaultIssuerUri : issuer(base, defaultRealm),
-                defaultOfflineAccess
+                defaultOfflineAccess,
+                null,
+                defaultIdentityMethods
         ));
         properties.getRealms().forEach((name, realm) -> {
             String realmName = name.toLowerCase();
@@ -73,7 +88,8 @@ public class RealmRegistry {
                     realm.isOfflineAccess(),
                     realm.isPlatformLogin()
                             ? (StringUtils.hasText(realm.getPlatformClientId()) ? realm.getPlatformClientId() : realmName + "-platform")
-                            : null
+                            : null,
+                    realm.isIdentityMethods()
             ));
         });
         this.defaultRealm = defaultRealm;

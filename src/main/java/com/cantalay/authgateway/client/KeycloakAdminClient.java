@@ -3,6 +3,7 @@ package com.cantalay.authgateway.client;
 import com.cantalay.authgateway.domain.KeycloakCredentialDto;
 import com.cantalay.authgateway.domain.KeycloakFederatedIdentityDto;
 import com.cantalay.authgateway.domain.KeycloakUserDto;
+import com.cantalay.authgateway.domain.KeycloakUserSessionDto;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -104,6 +105,28 @@ public interface KeycloakAdminClient {
             produces = MediaType.APPLICATION_JSON_VALUE
     )
     List<KeycloakFederatedIdentityDto> getFederatedIdentities(
+            @PathVariable String realm,
+            @PathVariable String userId,
+            @RequestHeader("Authorization") String authorization
+    );
+
+    /** Removes the link between the user and an identity provider account (Google, Apple, ...). */
+    @DeleteMapping(
+            value = "/admin/realms/{realm}/users/{userId}/federated-identity/{provider}"
+    )
+    void removeFederatedIdentity(
+            @PathVariable String realm,
+            @PathVariable String userId,
+            @PathVariable String provider,
+            @RequestHeader("Authorization") String authorization
+    );
+
+    /** Online sessions of the user. */
+    @GetMapping(
+            value = "/admin/realms/{realm}/users/{userId}/sessions",
+            produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    List<KeycloakUserSessionDto> getUserSessions(
             @PathVariable String realm,
             @PathVariable String userId,
             @RequestHeader("Authorization") String authorization

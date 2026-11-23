@@ -47,6 +47,19 @@ public final class AuthError {
                     "sessions_revoke_failed");
     public static final Error RATE_LIMITED =
             new Error(HttpStatus.TOO_MANY_REQUESTS, "Too many requests. Try again later.", "rate_limited");
+    public static final Error LAST_METHOD =
+            new Error(HttpStatus.CONFLICT, "This is the account's only sign-in method.", "last_method");
+    public static final Error IDENTITY_IN_USE =
+            new Error(HttpStatus.CONFLICT, "This provider account belongs to another account.", "identity_in_use");
+    public static final Error IDENTITY_MISMATCH =
+            new Error(HttpStatus.CONFLICT, "This provider account could not be linked to the signed-in account.",
+                    "identity_mismatch");
+    public static final Error ACCOUNT_EXISTS_UNVERIFIED =
+            new Error(HttpStatus.CONFLICT,
+                    "An account with this email exists but its email is not confirmed. Sign in with its password first.",
+                    "account_exists_unverified");
+    public static final Error SOCIAL_MODE_INVALID =
+            new Error(HttpStatus.BAD_REQUEST, "mode must be 'login' or 'link'.", "invalid_mode");
     public static final Error NOT_FOUND =
             new Error(HttpStatus.NOT_FOUND, "No endpoint at this path.", "not_found");
 
