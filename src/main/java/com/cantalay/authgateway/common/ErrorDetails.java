@@ -24,6 +24,8 @@ public class ErrorDetails {
     private String code;
     private String path;
     private Map<String, String> validationErrors;
+    /** Address the error is about ({@code account_exists_unverified}); absent for other errors. */
+    private String email;
     
 }
 

@@ -12,6 +12,8 @@ package com.cantalay.authgateway.realm;
  *                          SSO max lifespan); the realm must grant the {@code offline_access} role
  * @param platformClientId  client bound to the platform-identity direct grant flow (Game Center / Play Games sign-in,
  *                          talay-keycloak-providers); {@code null} when the realm has no platform sign-in
+ * @param identityMethods   sign-in method endpoints ({@code identities}, {@code /social} with {@code mode=link}) and the
+ *                          unverified-account guard of social sign-in; off by default
  */
 public record RealmConfig(
         String name,
@@ -20,19 +22,25 @@ public record RealmConfig(
         String adminClientSecret,
         String issuerUri,
         boolean offlineAccess,
-        String platformClientId
+        String platformClientId,
+        boolean identityMethods
 ) {
     public RealmConfig(String name, String clientId, String adminClientId, String adminClientSecret, String issuerUri) {
-        this(name, clientId, adminClientId, adminClientSecret, issuerUri, false, null);
+        this(name, clientId, adminClientId, adminClientSecret, issuerUri, false, null, false);
     }
 
     public RealmConfig(String name, String clientId, String adminClientId, String adminClientSecret, String issuerUri, boolean offlineAccess) {
-        this(name, clientId, adminClientId, adminClientSecret, issuerUri, offlineAccess, null);
+        this(name, clientId, adminClientId, adminClientSecret, issuerUri, offlineAccess, null, false);
+    }
+
+    public RealmConfig(String name, String clientId, String adminClientId, String adminClientSecret, String issuerUri,
+                       boolean offlineAccess, String platformClientId) {
+        this(name, clientId, adminClientId, adminClientSecret, issuerUri, offlineAccess, platformClientId, false);
     }
 
     @Override
     public String toString() {
         return "RealmConfig[name=" + name + ", clientId=" + clientId + ", adminClientId=" + adminClientId
-                + ", issuerUri=" + issuerUri + ", offlineAccess=" + offlineAccess + ", platformClientId=" + platformClientId + "]";
+                + ", issuerUri=" + issuerUri + ", offlineAccess=" + offlineAccess + ", platformClientId=" + platformClientId + ", identityMethods=" + identityMethods + "]";
     }
 }

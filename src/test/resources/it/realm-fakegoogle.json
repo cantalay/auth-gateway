@@ -1,0 +1,25 @@
+{
+  "realm": "fakegoogle",
+  "displayName": "Fake Google (IT)",
+  "enabled": true,
+  "sslRequired": "none",
+  "loginWithEmailAllowed": true,
+  "registrationAllowed": false,
+  "verifyEmail": false,
+  "clients": [
+    {
+      "clientId": "todogi-broker",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "it-broker-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "*"
+      ],
+      "webOrigins": []
+    }
+  ]
+}

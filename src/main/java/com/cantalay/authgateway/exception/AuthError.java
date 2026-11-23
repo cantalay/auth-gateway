@@ -47,6 +47,38 @@ public final class AuthError {
                     "sessions_revoke_failed");
     public static final Error RATE_LIMITED =
             new Error(HttpStatus.TOO_MANY_REQUESTS, "Too many requests. Try again later.", "rate_limited");
+    public static final Error LAST_METHOD =
+            new Error(HttpStatus.CONFLICT, "This is the account's only sign-in method.", "last_method");
+    public static final Error IDENTITY_IN_USE =
+            new Error(HttpStatus.CONFLICT, "This provider account belongs to another account.", "identity_in_use");
+    public static final Error IDENTITY_MISMATCH =
+            new Error(HttpStatus.CONFLICT, "This provider account could not be linked to the signed-in account.",
+                    "identity_mismatch");
+    public static final Error ACCOUNT_EXISTS_UNVERIFIED =
+            new Error(HttpStatus.CONFLICT,
+                    "An account with this email exists but its email is not confirmed. Sign in with its password, or reset "
+                            + "the password to prove the address; then the provider can be used.",
+                    "account_exists_unverified");
+    public static final Error ACCOUNT_EXISTS =
+            new Error(HttpStatus.CONFLICT,
+                    "An account with this email exists and this provider account cannot be linked to it. Sign in with its password.",
+                    "account_exists");
+    public static final Error IDENTITY_UNPROVEN =
+            new Error(HttpStatus.CONFLICT,
+                    "The provider sign-in could not be confirmed for linking. Start the provider sign-in again.",
+                    "identity_unproven");
+    public static final Error SOCIAL_CANCELLED =
+            new Error(HttpStatus.BAD_REQUEST, "The provider sign-in was cancelled.", "social_cancelled");
+    public static final Error SOCIAL_FAILED =
+            new Error(HttpStatus.BAD_REQUEST, "The provider sign-in did not complete.", "social_failed");
+    public static final Error PROVIDER_REQUIRED =
+            new Error(HttpStatus.BAD_REQUEST, "provider is required to link an identity provider.", "invalid_provider");
+    public static final Error SOCIAL_MODE_INVALID =
+            new Error(HttpStatus.BAD_REQUEST, "mode must be 'login' or 'link'.", "invalid_mode");
+    public static final Error NOT_FOUND =
+            new Error(HttpStatus.NOT_FOUND, "No endpoint at this path.", "not_found");
+    public static final Error METHOD_NOT_ALLOWED =
+            new Error(HttpStatus.METHOD_NOT_ALLOWED, "This method is not allowed at this path.", "method_not_allowed");
 
     /* =======================
        INNER TYPE

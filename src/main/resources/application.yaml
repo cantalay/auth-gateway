@@ -23,6 +23,9 @@ keycloak:
   client-id: ${KEYCLOAK_CLIENT_ID:auth}
   # Varsayılan realm'de login offline_access ister (ek realm'lerde GATEWAY_REALMS_<REALM>_OFFLINEACCESS).
   offline-access: ${KEYCLOAK_OFFLINE_ACCESS:false}
+  # Varsayılan realm'de giriş yöntemi uçları: GET/DELETE /auth/identities, /social mode=link (ek realm'lerde
+  # GATEWAY_REALMS_<REALM>_IDENTITYMETHODS). Kapalıyken bu uçlar 404 realm_feature_disabled, /social eskisi gibi.
+  identity-methods: ${KEYCLOAK_IDENTITY_METHODS:false}
   admin:
     client-id: ${KEYCLOAK_ADMIN_CLIENT_ID}
     client-secret: ${KEYCLOAK_ADMIN_CLIENT_SECRET}

@@ -421,6 +421,27 @@ class AccountControllerTest {
 
     /* ---------- review fixes ---------- */
 
+    /**
+     * The way out of {@code account_exists_unverified}: the reset link proves the address and replaces a password
+     * someone else may have set, so the email counts as confirmed (Keycloak then links Google to the account). Not while
+     * another session may still live.
+     */
+    @Test
+    void resetConfirmsTheEmailOnceEverySessionEnded() throws Exception {
+        when(keycloak.token(eq("todogi"), any())).thenReturn(new TokenResponseDto("at", "rt", 300, 0, "Bearer", "openid"));
+        doThrow(feign(503, "{}")).when(admin).logoutUser("todogi", USER_ID, "Bearer adm");
+        mvc.perform(post("/auth/todogi/reset-password").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"token\":\"" + resetToken() + "\",\"newPassword\":\"Yeni-Parola-2026\"}"))
+                .andExpect(status().isServiceUnavailable());
+        verify(admin, never()).updateUser(any(), any(), any(), anyMap());
+
+        org.mockito.Mockito.doNothing().when(admin).logoutUser("todogi", USER_ID, "Bearer adm");
+        mvc.perform(post("/auth/todogi/reset-password").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"token\":\"" + resetToken() + "\",\"newPassword\":\"Ikinci-Parola-2026\"}"))
+                .andExpect(status().isOk());
+        verify(admin).updateUser("todogi", USER_ID, "Bearer adm", Map.of("emailVerified", true));
+    }
+
     @Test
     void failedSessionRevocationIsA503WithoutANewSession() throws Exception {
         String token = resetToken();
