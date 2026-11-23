@@ -90,6 +90,32 @@ public class GlobalAuthExceptionHandler {
                 .body(ApiResponse.error(errorDetails));
     }
 
+    /**
+     * Unknown path: 404 in the usual error body. Spring Boot hands paths without a controller to the static resource
+     * handler ({@code NoResourceFoundException}); without it ({@code NoHandlerFoundException}) the outcome is the same.
+     */
+    @ExceptionHandler({org.springframework.web.servlet.resource.NoResourceFoundException.class,
+            org.springframework.web.servlet.NoHandlerFoundException.class})
+    public ResponseEntity<ApiResponse<Void>> handleUnknownPath(
+            Exception ex,
+            HttpServletRequest request) {
+
+        log.info("No endpoint for {} {}", request.getMethod(), request.getRequestURI());
+
+        ErrorDetails errorDetails = ErrorDetails.builder()
+                .timestamp(LocalDateTime.now())
+                .status(404)
+                .error("Not Found")
+                .message(AuthError.NOT_FOUND.message())
+                .code(AuthError.NOT_FOUND.code())
+                .path(request.getRequestURI())
+                .build();
+
+        return ResponseEntity
+                .status(404)
+                .body(ApiResponse.error(errorDetails));
+    }
+
     // (opsiyonel ama önerilir)
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleUnexpected(

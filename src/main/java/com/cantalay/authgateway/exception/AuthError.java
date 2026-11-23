@@ -47,6 +47,8 @@ public final class AuthError {
                     "sessions_revoke_failed");
     public static final Error RATE_LIMITED =
             new Error(HttpStatus.TOO_MANY_REQUESTS, "Too many requests. Try again later.", "rate_limited");
+    public static final Error NOT_FOUND =
+            new Error(HttpStatus.NOT_FOUND, "No endpoint at this path.", "not_found");
 
     /* =======================
        INNER TYPE
