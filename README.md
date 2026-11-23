@@ -16,8 +16,8 @@ Her endpoint realm'li (`/auth/{realm}/...`) ve varsayılan realm için eski (`/a
 | POST | `/auth/{realm}/verify-email` | — | `{token}` → 204 (zaten onaylıysa da 204) / 410 `verify_token_invalid`; sonra istemci `/refresh` ile `email_verified` claim'ini tazeler |
 | POST | `/auth/{realm}/forgot-password` | — | `{email, locale?}` → her zaman 202; parolalı hesaba sıfırlama bağlantısı, parolasız (Google/Apple) hesaba "sağlayıcınla giriş yap" e-postası |
 | POST | `/auth/{realm}/reset-password/check` | — | `{token}` → 204 / 410 `reset_token_invalid` (form açılmadan "bağlantının süresi doldu" ekranı) |
-| POST | `/auth/{realm}/reset-password` | — | `{token, newPassword}` → 200 token yanıtı (bu cihazda yeni oturum) / 204 (parola değişti, giriş yapılamadı) / 400 `password_policy` / 410 `reset_token_invalid` / 503 `sessions_revoke_failed` |
-| POST | `/auth/{realm}/social` | — / Bearer | `{code, redirectUri, mode?}` → token (kc_idp_hint ile alınan code). `mode` yok ya da `login`: giriş. `mode: "link"` (Bearer zorunlu, **realm başına açılır**, bkz. Giriş yöntemleri): sağlayıcıyı oturumdaki hesaba bağlar |
+| POST | `/auth/{realm}/reset-password` | — | `{token, newPassword}` → 200 token yanıtı (bu cihazda yeni oturum) / 204 (parola değişti, giriş yapılamadı) / 400 `password_policy` / 410 `reset_token_invalid` / 503 `sessions_revoke_failed`. Diğer oturumlar kapandıysa e-posta onaylı yapılır (bağlantı adrese gitti, parola değişti) |
+| POST | `/auth/{realm}/social` | — / Bearer | `{code, redirectUri, provider?, mode?}` → token (`kc_idp_hint=<provider>` ile alınan code). `mode` yok ya da `login`: giriş. `mode: "link"` (Bearer ve `provider` zorunlu, **realm başına açılır**, bkz. Giriş yöntemleri): sağlayıcıyı oturumdaki hesaba bağlar. Dönüş adresine kod yerine hata geldiyse `{error, errorDescription, redirectUri}` (her realm'de): `account_exists_unverified` / `account_exists` → 409, `access_denied` → 400 `social_cancelled`, diğer → 400 `social_failed` |
 | POST | `/auth/{realm}/logout` | Bearer | `{refreshToken}` |
 | GET | `/auth/{realm}/me` | Bearer | Kullanıcı bilgisi |
 | PATCH | `/auth/{realm}/me` | Bearer | `{firstName, lastName}` |
@@ -31,7 +31,9 @@ Bilinmeyen realm 404 döner; bilinmeyen yol 404 `not_found` (Bearer'sız istekte
 
 Hata gövdesi `{success:false, error:{timestamp, status, error, message, path, code?, validationErrors?, email?}}`. `code`
 istemci çevirisi içindir ve yalnız kodu olan hatalarda bulunur (eski hatalarda alan yoktur); `email` yalnız
-`account_exists_unverified`'da:
+gateway'in kod değiştirdikten sonra verdiği `account_exists_unverified`'da (Keycloak'ın yönlendirmesinden çevrilende yok).
+Yanlış metot 405 `method_not_allowed` + `Allow` (eskiden 500). Bearer yalnız erişim belirtecidir (`typ: Bearer`); aynı
+realm'in kimlik belirteci (ID token) 401:
 
 | `code` | Durum | Anlam |
 | --- | --- | --- |
@@ -43,8 +45,13 @@ istemci çevirisi içindir ve yalnız kodu olan hatalarda bulunur (eski hatalard
 | `realm_feature_disabled` | 404 | Realm'de bu özellik açık değil (`RESETURL` / `VERIFYURL` tanımsız; giriş yöntemi uçlarında `IDENTITYMETHODS` kapalı) |
 | `last_method` | 409 | `DELETE identities/{alias}`: kalan tek giriş yöntemi (parola yok, başka sağlayıcı yok) |
 | `identity_in_use` | 409 | `social` `mode=link`: sağlayıcı hesabı başka bir mevcut kullanıcıya ait; oturumdaki kullanıcıya dokunulmaz |
-| `identity_mismatch` | 409 | `social` `mode=link`: kod başka bir kullanıcıya çözüldü ve Keycloak onu bu girişte açmıştı (farklı e-postalı sağlayıcı hesabı); o kullanıcı silinir |
-| `account_exists_unverified` | 409 | `social` girişi: bu e-postayla parolalı ama e-postası onaylanmamış hesap var; gövdede `email`. İstemci: "Bu e-postayla bir hesap var" → parolayla giriş, sonra Profil › Giriş yöntemi'nden bağlama |
+| `identity_mismatch` | 409 | `social` `mode=link`: kod başka bir kullanıcıya çözüldü ve Keycloak onu tam bu girişte açmıştı (farklı e-postalı sağlayıcı hesabı); o kullanıcı silinir (silinemezse 503) |
+| `identity_unproven` | 409 | `social` `mode=link`: kod, istenen `provider` ile son 2 dakikada yapılmış bir girişten gelmiyor (parolalı oturum, başka sağlayıcı, eski SSO oturumu); hiçbir şey bağlanmaz. İstemci: sağlayıcı girişini `prompt=login` ile yeniden başlat |
+| `invalid_provider` | 400 | `social` `mode=link`: `provider` yok |
+| `account_exists_unverified` | 409 | `social`: bu e-postayla parolalı ama e-postası onaylanmamış hesap var (Keycloak bağlamadı ya da gateway reddetti). İstemci: "Bu e-postayla açılmış, onaylanmamış bir hesap var" → **parolayla giriş ya da parola sıfırlama** (sıfırlama adresi kanıtlar, bilinmeyen parolayı değiştirir, diğer oturumları kapatır ve e-postayı onaylı yapar; sonra sağlayıcı girişi aynı hesaba bağlanır). Onay e-postası önerme: adresi başkası kaydettiyse parola onda kalır |
+| `account_exists` | 409 | `social`: hesap var ama bu sağlayıcı hesabı ona bağlanamaz (sağlayıcı e-postayı doğrulamadı ya da yalnız kullanıcı adı çakıştı) → parolayla giriş |
+| `social_cancelled` / `social_failed` | 400 | `social` `{error}`: kullanıcı sağlayıcıda vazgeçti / sağlayıcı girişi başka nedenle bitmedi |
+| `method_not_allowed` | 405 | Bu yolda bu metot yok |
 | `invalid_mode` | 400 | `social` `mode` `login`/`link` değil (yalnız giriş yöntemleri açık realm'de; kapalı realm'de `mode` eskisi gibi yok sayılır) |
 | `not_found` | 404 | Bu yolda uç yok |
 
@@ -98,22 +105,30 @@ eski davranış — Keycloak admin API'sine hiç gidilmez.
 Açıkken:
 
 - **Liste / kaldırma:** admin API `users/{sub}/credentials` (`password` türü) ve `users/{sub}/federated-identity`. Kaldırma
-  kullanıcı başına kilitle sıralanır (iki paralel kaldırma son iki yöntemi birden götüremez).
-- **Bağlama (`mode: "link"`, Bearer):** istemci kodu, girişteki gibi `kc_idp_hint=<alias>` ile alır. Kodun açtığı oturumun
-  `sub`'ı Bearer'daki kullanıcıysa 200 + yeni oturumun token'ları (Keycloak'ın ilk aracı girişi aynı e-postalı hesaba
-  kendisi bağlar). Başka kullanıcıysa yeni oturum kapatılır, token'ları istemciye verilmez ve oturumdaki kullanıcıya
-  dokunulmaz: o kullanıcıyı Keycloak bu girişte açmışsa (≤ 60 sn, tek oturum, parolasız, tek sağlayıcı) silinir →
-  409 `identity_mismatch`; değilse 409 `identity_in_use`. Sağlayıcının adresi hesabın adresiyse hesabın e-postası onaylı
-  sayılır (`emailVerified=true`; realm sağlayıcının e-postasına güvenir).
-- **Sosyal girişte onaysız hesap:** talay-identity'nin ilk aracı giriş akışı (`social-first-login`: e-posta benzersizse
-  kullanıcı aç, değilse aynı e-postalı hesaba otomatik bağla) e-postası **onaylanmamış** parolalı hesaba da bağlar ve
-  istemciye kod döner (Keycloak 26.7.3'te IT ile gözlendi; yönlendirmede `error=` yok). Gateway kodu değiştirdikten sonra
-  hesaba bakar: parolası var, e-postası onaysız ve sağlayıcı bağı varsa bağlar kaldırılır, yeni oturum kapatılır, 409
-  `account_exists_unverified` + `email`. İkinci kullanıcı açılmaz; parolayla giriş ve sonra `mode=link` yolu açık kalır.
-  Denetim yapılamazsa (admin API hatası) oturum yine kapatılır, 503.
+  kullanıcı başına kilitle sıralanır (iki paralel kaldırma son iki yöntemi birden götüremez). Kullanıcı başına hız sınırı:
+  liste dakikada 30, kaldırma 10 dakikada 10 (429 `rate_limited`).
+- **Bağlamayı Keycloak yapar:** talay-identity `social-first-login` (talay-keycloak-providers `idp-auto-link-verified-only`)
+  aynı e-postalı hesaba yalnız e-postası onaylıysa bağlar; onaysızsa bağlamaz ve dönüş adresine
+  `error=access_denied&error_description=account_exists_unverified` gelir (kod yok). `social-post-login`
+  (`idp-unverified-account-guard`) eski bağlarla da parolalı + onaysız hesaba oturum açtırmaz. İstemci bu hatayı
+  `{error, errorDescription}` ile gönderir → 409. Aşağıdakiler bunun arkasında ikinci savunma hattıdır (kendisi doğrulamadan
+  bağlayan eski bir akış için de güvenli).
+- **Bağlama (`mode: "link"`, Bearer, `provider`):** istemci kodu `kc_idp_hint=<provider>&prompt=login` ile alır. Kanıt:
+  kodun oturumunun erişim belirtecinde `identity_provider` = `provider` (talay-identity kullanıcı oturumu notu eşleyicisi) ve
+  `auth_time` en çok 2 dakika önce; tutmazsa oturum kapatılır, 409 `identity_unproven`. Kanıtlı kod Bearer'daki
+  kullanıcınınsa 200 + yeni oturumun token'ları (bundan sonra admin çağrısı yok). Başka kullanıcınınsa yeni oturum kapatılır,
+  token'ları istemciye verilmez ve oturumdaki kullanıcıya dokunulmaz: o kullanıcıyı Keycloak tam bu girişte açmışsa (tek
+  oturumu kodun `sid`'i, `createdTimestamp` `auth_time`'a ±5 sn, parolasız, tek bağ bu sağlayıcı) silinir → 409
+  `identity_mismatch` (silinemezse iki denemeden sonra 503); değilse 409 `identity_in_use`. Bağlama **hiçbir zaman** e-postayı
+  onaylı yapmaz (bir bağ, parolayı kimin koyduğunu kanıtlamaz).
+- **Sosyal girişte onaysız hesap (ikinci hat):** kod parolası olan ve e-postası onaylanmamış bir hesaba çözülürse, bağları ne
+  olursa olsun, 409 `account_exists_unverified` + `email`. Oturum admin API ile `sid`'den kapatılır (çevrimiçi ve offline,
+  ikişer deneme; olmazsa refresh token ile çıkış), böylece ne token'ları ne tarayıcının SSO çerezi işe yarar. Bağlara
+  dokunulmaz. Denetim yapılamazsa (admin API hatası) oturum yine kapatılır, 503.
 - **Keycloak gereksinimi:** yönetim istemcisinin service account'unda `realm-management` `view-users` (liste, oturumlar)
-  ve `manage-users` (bağ kaldırma, kullanıcı silme/güncelleme) — talay-identity `gateway_client_enabled` bunları zaten
-  verir. Sağlayıcı takma adları (`google`, `apple`) ve `trust_email` talay-identity'dedir.
+  ve `manage-users` (bağ kaldırma, kullanıcı silme, oturum kapatma) — talay-identity `gateway_client_enabled` bunları
+  zaten verir. Sağlayıcı takma adları (`google`, `apple`), `trust_email`, ilk giriş / giriş sonrası akışları ve
+  `identity_provider` iddiası talay-identity'dedir (sosyal giriş açık realm'de).
 
 ## E-posta
 
@@ -172,7 +187,8 @@ result=ok|invalid|expired|policy|rate_limited|disabled|sessions_failed}` (`actio
 `rate_limited`), `auth_gateway_mail_sent_total{realm, template, result=ok|error|disabled}`,
 `auth_gateway_account_tasks_rejected_total` (kuyruk dolu, e-posta düştü), `auth_gateway_feature_degraded{realm, feature}`,
 `auth_gateway_identity_requests_total{realm, action=list|unlink|link|login, result=ok|disabled|invalid|not_linked|last_method|
-mismatch|in_use|unverified|unauthenticated|error}` (`login`: giriş yöntemleri açık realm'de `/social` girişi).
+mismatch|in_use|unverified|unproven|delete_failed|session_left|rate_limited|refused_<code>|unauthenticated|error}` (`login`:
+giriş yöntemleri açık realm'de `/social` girişi; `refused_<code>`: Keycloak'ın reddi, her realm'de).
 
 ## Testler
 

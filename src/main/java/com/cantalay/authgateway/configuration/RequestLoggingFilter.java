@@ -27,6 +27,11 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
             "([A-Za-z0-9])[A-Za-z0-9._%+-]*@");
     private static final java.util.regex.Pattern SENSITIVE_JSON_FIELD = java.util.regex.Pattern.compile(
             "\"([^\"]*(?i:password|token|secret|api_?key)[^\"]*)\"\\s*:\\s*\"(?:[^\"\\\\]|\\\\.)*\"?");
+    /** Request bodies only: an authorization code ({@code /social}) can be exchanged for tokens while it lives. */
+    private static final java.util.regex.Pattern CODE_JSON_FIELD = java.util.regex.Pattern.compile(
+            "\"(code)\"\\s*:\\s*\"(?:[^\"\\\\]|\\\\.)*\"?");
+    private static final java.util.regex.Pattern CODE_QUERY_PARAM = java.util.regex.Pattern.compile(
+            "(^|&)(code|[^&=]*(?i:token|password|secret))=[^&]*");
 
     @Override
     protected void doFilterInternal(
@@ -72,7 +77,8 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
         // Query parameters
         String queryString = request.getQueryString();
         if (queryString != null) {
-            logMessage.append("Query: ").append(queryString).append("\n");
+            logMessage.append("Query: ").append(CODE_QUERY_PARAM.matcher(queryString).replaceAll("$1$2=***MASKED***"))
+                    .append("\n");
         }
         
         // Headers
@@ -84,7 +90,8 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
         // Request body (if applicable)
         String payload = getRequestPayload(request);
         if (payload != null && !payload.isEmpty()) {
-            logMessage.append("Body: ").append(maskSensitiveData(payload)).append("\n");
+            logMessage.append("Body: ").append(maskSensitiveData(CODE_JSON_FIELD.matcher(payload)
+                    .replaceAll("\"$1\":\"***MASKED***\""))).append("\n");
         }
         
         log.info(logMessage.toString());

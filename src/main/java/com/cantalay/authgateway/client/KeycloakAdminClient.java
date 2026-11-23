@@ -132,6 +132,20 @@ public interface KeycloakAdminClient {
             @RequestHeader("Authorization") String authorization
     );
 
+    /**
+     * Ends one user session: the online one ({@code offline=false}, also its SSO cookie) or the offline one with the same
+     * id ({@code offline=true}, the session an {@code offline_access} sign-in keeps). 404 when there is none.
+     */
+    @DeleteMapping(
+            value = "/admin/realms/{realm}/sessions/{sessionId}"
+    )
+    void deleteSession(
+            @PathVariable String realm,
+            @PathVariable String sessionId,
+            @RequestParam("isOffline") boolean offline,
+            @RequestHeader("Authorization") String authorization
+    );
+
     /** Ends every session of the user (refresh and offline tokens stop working). */
     @PostMapping(
             value = "/admin/realms/{realm}/users/{userId}/logout"

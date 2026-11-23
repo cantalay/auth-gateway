@@ -117,6 +117,30 @@ public class GlobalAuthExceptionHandler {
                 .body(ApiResponse.error(errorDetails));
     }
 
+    /** Known path, wrong method: 405 with {@code Allow} (was 500 through the catch-all). */
+    @ExceptionHandler(org.springframework.web.HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMethodNotAllowed(
+            org.springframework.web.HttpRequestMethodNotSupportedException ex,
+            HttpServletRequest request) {
+
+        log.info("Method {} not allowed for {}", request.getMethod(), request.getRequestURI());
+
+        ErrorDetails errorDetails = ErrorDetails.builder()
+                .timestamp(LocalDateTime.now())
+                .status(405)
+                .error("Method Not Allowed")
+                .message(AuthError.METHOD_NOT_ALLOWED.message())
+                .code(AuthError.METHOD_NOT_ALLOWED.code())
+                .path(request.getRequestURI())
+                .build();
+
+        ResponseEntity.BodyBuilder response = ResponseEntity.status(405);
+        if (ex.getSupportedHttpMethods() != null && !ex.getSupportedHttpMethods().isEmpty()) {
+            response.allow(ex.getSupportedHttpMethods().toArray(new org.springframework.http.HttpMethod[0]));
+        }
+        return response.body(ApiResponse.error(errorDetails));
+    }
+
     // (opsiyonel ama önerilir)
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleUnexpected(

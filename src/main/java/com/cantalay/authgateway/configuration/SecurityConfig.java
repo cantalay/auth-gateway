@@ -27,12 +27,35 @@ public class SecurityConfig {
         this.allowedOrigins = allowedOrigins.stream().map(String::trim).filter(origin -> !origin.isEmpty()).toList();
     }
 
-    /** Accepts access tokens from every configured realm; controllers check the token realm against the path. */
+    /**
+     * Accepts access tokens from every configured realm; controllers check the token realm against the path. As
+     * {@code JwtIssuerAuthenticationManagerResolver.fromTrustedIssuers} (decoder per issuer from its discovery document,
+     * signature, expiry and issuer checked), and the token must be an access token: Keycloak signs ID tokens with the
+     * same key and issuer ({@code typ: ID}), they are not accepted as Bearer.
+     */
     @Bean
     JwtIssuerAuthenticationManagerResolver jwtIssuerResolver(RealmRegistry realms) {
-        return JwtIssuerAuthenticationManagerResolver.fromTrustedIssuers(
-                realms.all().stream().map(RealmConfig::issuerUri).toList()
-        );
+        java.util.Set<String> trusted = realms.all().stream().map(RealmConfig::issuerUri)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        java.util.Map<String, org.springframework.security.authentication.AuthenticationManager> managers =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        return new JwtIssuerAuthenticationManagerResolver(issuer -> !trusted.contains(issuer) ? null
+                : managers.computeIfAbsent(issuer, i -> new org.springframework.security.oauth2.server.resource.authentication
+                        .JwtAuthenticationProvider(accessTokensOnly(org.springframework.security.oauth2.jwt.JwtDecoders
+                        .fromIssuerLocation(i)))::authenticate));
+    }
+
+    /** Keycloak access tokens (also offline and platform sign-in ones) carry {@code typ: Bearer}. */
+    static org.springframework.security.oauth2.jwt.JwtDecoder accessTokensOnly(org.springframework.security.oauth2.jwt.JwtDecoder decoder) {
+        return token -> {
+            org.springframework.security.oauth2.jwt.Jwt jwt = decoder.decode(token);
+            if (!"Bearer".equals(jwt.getClaimAsString("typ"))) {
+                throw new org.springframework.security.oauth2.jwt.JwtValidationException("Not an access token",
+                        List.of(new org.springframework.security.oauth2.core.OAuth2Error("invalid_token",
+                                "Not an access token", null)));
+            }
+            return jwt;
+        };
     }
 
     @Bean

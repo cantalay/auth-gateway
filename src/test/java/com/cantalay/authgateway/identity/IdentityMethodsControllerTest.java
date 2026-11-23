@@ -257,14 +257,18 @@ class IdentityMethodsControllerTest {
         assertThat(count("todogi", "login", "ok")).isEqualTo(3);
     }
 
-    /** Criterion 17 (component): Keycloak linked Google to a password account nobody has confirmed. */
+    /**
+     * Criterion 17 (component), second line: Keycloak (an older flow, or a link from before) signed Google in to a
+     * password account nobody has confirmed. The session is ended through the admin API (online and offline), links
+     * stay, no tokens.
+     */
     @Test
     void socialSignInIntoAnUnconfirmedPasswordAccountIsRefused() throws Exception {
         user(CAN, "can@ornek.com", false, Instant.parse("2026-01-01T00:00:00Z"));
-        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(CAN));
+        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(CAN, "google", clock.instant(), "sid-can"));
         when(admin.getFederatedIdentities("todogi", CAN, ADMIN)).thenReturn(List.of(link("google", "can@ornek.com")));
 
-        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth"))
+        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "provider", "google"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.success").value(false))
                 .andExpect(jsonPath("$.error.code").value("account_exists_unverified"))
@@ -272,11 +276,48 @@ class IdentityMethodsControllerTest {
                 .andExpect(jsonPath("$.error.path").value("/auth/todogi/social"))
                 .andExpect(jsonPath("$.error.message").exists())
                 .andExpect(jsonPath("$.error.timestamp").exists())
+                .andExpect(jsonPath("$.access_token").doesNotExist())
                 .andExpect(jsonPath("$.data").doesNotExist());
-        verify(admin).removeFederatedIdentity("todogi", CAN, "google", ADMIN);
-        verify(keycloak).logout(eq("todogi"), argThat(form -> ("refresh-" + CAN).equals(form.getFirst("refresh_token"))));
+        verify(admin).deleteSession("todogi", "sid-can", false, ADMIN);
+        verify(admin).deleteSession("todogi", "sid-can", true, ADMIN);
+        verify(keycloak, never()).logout(any(), any());
+        verify(admin, never()).removeFederatedIdentity(any(), any(), any(), any()); // Ö3: links are not touched
         verify(admin, never()).logoutUser(any(), any(), any()); // the account's other sessions are not ours to end
+        verify(admin, never()).updateUser(any(), any(), any(), any());
         assertThat(count("todogi", "login", "unverified")).isEqualTo(1);
+    }
+
+    /** Ö1: an SSO session left from before (no links any more) still cannot sign in to such an account. */
+    @Test
+    void unconfirmedPasswordAccountIsRefusedWhateverItsLinks() throws Exception {
+        user(CAN, "can@ornek.com", false, Instant.parse("2026-01-01T00:00:00Z"));
+        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(CAN, "google", clock.instant().minusSeconds(3600), "sid-old"));
+        when(admin.getFederatedIdentities("todogi", CAN, ADMIN)).thenReturn(List.of());
+
+        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("account_exists_unverified"));
+        verify(admin).deleteSession("todogi", "sid-old", false, ADMIN);
+    }
+
+    /** Admin API down: the refresh token is logged out instead; when that fails too the open session is counted. */
+    @Test
+    void sessionEndFallsBackToTheRefreshToken() throws Exception {
+        user(CAN, "can@ornek.com", false, Instant.parse("2026-01-01T00:00:00Z"));
+        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(CAN, "google", clock.instant(), "sid-can"));
+        doThrow(feign(503, "{}")).when(admin).deleteSession(eq("todogi"), eq("sid-can"), org.mockito.ArgumentMatchers.anyBoolean(), eq(ADMIN));
+
+        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth"))
+                .andExpect(status().isConflict());
+        verify(admin, org.mockito.Mockito.times(2)).deleteSession("todogi", "sid-can", false, ADMIN); // retried once
+        verify(keycloak).logout(eq("todogi"), argThat(form -> ("refresh-" + CAN).equals(form.getFirst("refresh_token"))));
+        assertThat(count("todogi", "login", "session_left")).isZero();
+
+        doThrow(feign(503, "{}")).when(keycloak).logout(eq("todogi"), any());
+        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.access_token").doesNotExist());
+        assertThat(count("todogi", "login", "session_left")).isEqualTo(1);
     }
 
     @Test
@@ -292,6 +333,7 @@ class IdentityMethodsControllerTest {
         user(NEW, "x@privaterelay.appleid.com", false, clock.instant());
         social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth")).andExpect(status().isOk());
         verify(admin, never()).removeFederatedIdentity(any(), any(), any(), any());
+        verify(admin, never()).deleteSession(any(), any(), org.mockito.ArgumentMatchers.anyBoolean(), any());
     }
 
     @Test
@@ -313,52 +355,163 @@ class IdentityMethodsControllerTest {
         verifyNoInteractions(keycloak);
     }
 
-    /* ======================= /social mode=link ======================= */
+    /* ======================= /social with Keycloak's refusal ======================= */
+
+    /**
+     * talay-keycloak-providers refuses the link in Keycloak and the app's redirect gets {@code error} instead of a
+     * code: the gateway translates it, in every realm (vitafinder has no identity methods), without calling Keycloak.
+     */
+    @Test
+    void keycloaksRefusalIsTranslatedInEveryRealm() throws Exception {
+        signedIn("todogi", CAN);
+        for (String path : List.of("/auth/vitafinder/social", "/auth/todogi/social", "/auth/social")) {
+            social(path, Map.of("error", "access_denied", "errorDescription", "account_exists_unverified",
+                    "redirectUri", "app://cb"))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.error.code").value("account_exists_unverified"))
+                    .andExpect(jsonPath("$.error.email").doesNotExist());
+            social(path, Map.of("error", "access_denied", "error_description", "account_exists", "redirectUri", "app://cb",
+                    "mode", "link"))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.error.code").value("account_exists"));
+            social(path, Map.of("error", "access_denied", "redirectUri", "app://cb"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error.code").value("social_cancelled"));
+            social(path, Map.of("error", "server_error", "errorDescription", "x", "redirectUri", "app://cb"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error.code").value("social_failed"));
+        }
+        verifyNoInteractions(keycloak, admin);
+        assertThat(count("vitafinder", "login", "refused_account_exists_unverified")).isEqualTo(1);
+        assertThat(count("todogi", "link", "refused_account_exists")).isEqualTo(2);
+    }
 
     @Test
-    void linkResolvingToTheSignedInUserReturnsTheNewSession() throws Exception {
+    void codeIsRequiredWithoutAnError() throws Exception {
+        social("/auth/vitafinder/social", Map.of("redirectUri", "app://cb", "errorDescription", "account_exists_unverified"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.message").value("Validation failed"))
+                .andExpect(jsonPath("$.error.validationErrors.code").exists());
+        social("/auth/vitafinder/social", Map.of("code", " ", "redirectUri", "app://cb"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.validationErrors.code").exists());
+        verifyNoInteractions(keycloak, admin);
+    }
+
+    /* ======================= /social mode=link ======================= */
+
+    /** The code proves a Google sign-in of the signed-in user made just now: linked; no admin call after it (k3). */
+    @Test
+    void linkProvenBySignInReturnsTheNewSession() throws Exception {
         signedIn("todogi", CAN);
         user(CAN, "can@ornek.com", false, Instant.parse("2026-01-01T00:00:00Z"));
-        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(CAN));
-        when(admin.getFederatedIdentities("todogi", CAN, ADMIN)).thenReturn(List.of(link("google", "Can@Ornek.com")));
+        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(CAN, "google", clock.instant().minusSeconds(20), "sid-can"));
 
-        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link"))
+        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link", "provider", "google"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.access_token").value(tokens(CAN).accessToken()))
+                .andExpect(jsonPath("$.access_token").value(tokens(CAN, "google", clock.instant().minusSeconds(20), "sid-can").accessToken()))
                 .andExpect(jsonPath("$.refresh_token").value("refresh-" + CAN));
-        // Google vouched for the account's own address: it counts as confirmed from now on
-        verify(admin).updateUser("todogi", CAN, ADMIN, Map.of("emailVerified", true));
+        // K1: linking never marks the email confirmed
+        verifyNoInteractions(admin);
+        verify(adminService, never()).getAdminAccessToken(any());
         verify(keycloak, never()).logout(any(), any());
-        verify(admin, never()).removeFederatedIdentity(any(), any(), any(), any());
         assertThat(count("todogi", "link", "ok")).isEqualTo(1);
     }
 
     @Test
-    void linkDoesNotConfirmAnotherAddress() throws Exception {
+    void linkNeedsTheProvider() throws Exception {
         signedIn("todogi", CAN);
-        user(CAN, "can@ornek.com", false, Instant.parse("2026-01-01T00:00:00Z"));
-        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(CAN));
-        when(admin.getFederatedIdentities("todogi", CAN, ADMIN)).thenReturn(List.of(link("google", "baska@gmail.com")));
 
         social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link"))
-                .andExpect(status().isOk());
-        verify(admin, never()).updateUser(any(), any(), any(), any());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("invalid_provider"));
+        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link", "provider", "Google!"))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(keycloak, admin);
     }
 
-    /** Criterion 16 (component): a different address made Keycloak create a user; it is deleted. */
+    /**
+     * Ö2 / K1: a code that does not prove a fresh sign-in with the provider (a password session, a session of another
+     * provider, an old SSO session) links nothing: 409 identity_unproven, its session ended, the email untouched.
+     */
+    @Test
+    void linkWithoutProofIsRefused() throws Exception {
+        signedIn("todogi", CAN);
+        user(CAN, "can@ornek.com", false, Instant.parse("2026-01-01T00:00:00Z"));
+        when(admin.getFederatedIdentities("todogi", CAN, ADMIN)).thenReturn(List.of(link("google", "can@ornek.com")));
+        List<TokenResponseDto> unproven = List.of(
+                tokens(CAN, null, clock.instant(), "sid-1"),                              // password sign-in
+                tokens(CAN, "apple", clock.instant(), "sid-2"),                           // another provider
+                tokens(CAN, "google", clock.instant().minus(Duration.ofMinutes(3)), "sid-3"), // old SSO session
+                tokens(CAN, "google", null, "sid-4"));                                    // no auth_time
+        for (TokenResponseDto t : unproven) {
+            when(keycloak.token(eq("todogi"), any())).thenReturn(t);
+            social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link", "provider", "google"))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.error.code").value("identity_unproven"))
+                    .andExpect(jsonPath("$.access_token").doesNotExist());
+        }
+        for (int i = 1; i <= 4; i++) {
+            verify(admin).deleteSession("todogi", "sid-" + i, false, ADMIN);
+        }
+        verify(admin, never()).updateUser(any(), any(), any(), any());
+        verify(admin, never()).removeFederatedIdentity(any(), any(), any(), any());
+        assertThat(count("todogi", "link", "unproven")).isEqualTo(4);
+    }
+
+    /** Criterion 16 (component): a different address made Keycloak create a user for exactly this sign-in; it is deleted. */
     @Test
     void linkResolvingToAUserCreatedForItDeletesThatUser() throws Exception {
         signedIn("todogi", CAN);
-        newBrokerUser(NEW, "baska@gmail.com", 1);
+        newBrokerUser(NEW, "baska@gmail.com", List.of("sid-new"), 2);
 
-        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link"))
+        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link", "provider", "google"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("identity_mismatch"))
                 .andExpect(jsonPath("$.access_token").doesNotExist());
         verify(admin).deleteUser("todogi", NEW, ADMIN);
-        verify(keycloak).logout(eq("todogi"), argThat(form -> ("refresh-" + NEW).equals(form.getFirst("refresh_token"))));
+        verify(admin).deleteSession("todogi", "sid-new", false, ADMIN);
         verifySignedInUserUntouched();
         assertThat(count("todogi", "link", "mismatch")).isEqualTo(1);
+    }
+
+    /** k2: the user Keycloak created could not be deleted: the client is told (503), not a silent 409. */
+    @Test
+    void failedDeletionIsReported() throws Exception {
+        signedIn("todogi", CAN);
+        newBrokerUser(NEW, "baska@gmail.com", List.of("sid-new"), 2);
+        doThrow(feign(503, "{}")).when(admin).deleteUser("todogi", NEW, ADMIN);
+
+        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link", "provider", "google"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.access_token").doesNotExist());
+        verify(admin, org.mockito.Mockito.times(2)).deleteUser("todogi", NEW, ADMIN);
+        assertThat(count("todogi", "link", "delete_failed")).isEqualTo(1);
+    }
+
+    /** k1: deletion needs every sign of "created for this sign-in"; any other user is only refused. */
+    @Test
+    void usersNotCreatedForThisSignInAreNotDeleted() throws Exception {
+        signedIn("todogi", CAN);
+        // signed up 30 s before this sign-in (another device)
+        newBrokerUser(NEW, "baska@gmail.com", List.of("sid-new"), 30);
+        assertInUse();
+        // the code's session is not its only one
+        newBrokerUser(NEW, "baska@gmail.com", List.of("sid-new", "sid-phone"), 2);
+        assertInUse();
+        // its only session is another one
+        newBrokerUser(NEW, "baska@gmail.com", List.of("sid-phone"), 2);
+        assertInUse();
+        // a password, or a second provider
+        newBrokerUser(NEW, "baska@gmail.com", List.of("sid-new"), 2);
+        when(admin.getCredentials("todogi", NEW, ADMIN)).thenReturn(List.of(password()));
+        assertInUse();
+        newBrokerUser(NEW, "baska@gmail.com", List.of("sid-new"), 2);
+        when(admin.getFederatedIdentities("todogi", NEW, ADMIN)).thenReturn(List.of(link("google", "baska@gmail.com"),
+                link("apple", "x")));
+        assertInUse();
+        verify(admin, never()).deleteUser(any(), any(), any());
+        assertThat(count("todogi", "link", "in_use")).isEqualTo(5);
     }
 
     /** Criterion 16 (component): the provider account belongs to another existing user. */
@@ -366,61 +519,41 @@ class IdentityMethodsControllerTest {
     void linkResolvingToAnotherExistingUserIsInUse() throws Exception {
         signedIn("todogi", CAN);
         user(AYSE, "ayse@gmail.com", true, Instant.parse("2026-03-01T00:00:00Z"));
-        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(AYSE));
+        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(AYSE, "google", clock.instant(), "sid-ayse"));
         when(admin.getFederatedIdentities("todogi", AYSE, ADMIN)).thenReturn(List.of(link("google", "ayse@gmail.com")));
         when(admin.getCredentials("todogi", AYSE, ADMIN)).thenReturn(List.of());
 
-        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link"))
+        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link", "provider", "google"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("identity_in_use"));
         verify(admin, never()).deleteUser(any(), any(), any());
         verify(admin, never()).removeFederatedIdentity(any(), any(), any(), any());
-        verify(keycloak).logout(eq("todogi"), argThat(form -> ("refresh-" + AYSE).equals(form.getFirst("refresh_token"))));
+        verify(admin).deleteSession("todogi", "sid-ayse", false, ADMIN);
+        verify(admin).deleteSession("todogi", "sid-ayse", true, ADMIN);
         verifySignedInUserUntouched();
         assertThat(count("todogi", "link", "in_use")).isEqualTo(1);
     }
 
+    /** Ö3: refusing never removes another account's links (an old realm's links stay). */
     @Test
-    void recentUserWithAnotherSessionIsNotDeleted() throws Exception {
-        signedIn("todogi", CAN);
-        newBrokerUser(NEW, "baska@gmail.com", 2); // signed up 30 s ago on another device and still there
-
-        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("identity_in_use"));
-        verify(admin, never()).deleteUser(any(), any(), any());
-    }
-
-    @Test
-    void userOlderThanAMinuteIsNotDeleted() throws Exception {
-        signedIn("todogi", CAN);
-        newBrokerUser(NEW, "baska@gmail.com", 1);
-        clock.now = clock.now.plus(Duration.ofSeconds(61));
-
-        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("identity_in_use"));
-        verify(admin, never()).deleteUser(any(), any(), any());
-    }
-
-    @Test
-    void linkIntoAnUnconfirmedPasswordAccountUndoesKeycloaksLink() throws Exception {
+    void linkIntoAnUnconfirmedPasswordAccountLeavesItsLinks() throws Exception {
         signedIn("todogi", CAN);
         user(AYSE, "ayse@gmail.com", false, Instant.parse("2026-03-01T00:00:00Z"));
-        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(AYSE));
-        when(admin.getFederatedIdentities("todogi", AYSE, ADMIN)).thenReturn(List.of(link("google", "ayse@gmail.com")));
+        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(AYSE, "google", clock.instant(), "sid-ayse"));
+        when(admin.getFederatedIdentities("todogi", AYSE, ADMIN)).thenReturn(List.of(link("google", "ayse@gmail.com"),
+                link("apple", "x")));
         when(admin.getCredentials("todogi", AYSE, ADMIN)).thenReturn(List.of(password()));
 
-        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link"))
+        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link", "provider", "google"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("identity_in_use"));
-        verify(admin).removeFederatedIdentity("todogi", AYSE, "google", ADMIN);
+        verify(admin, never()).removeFederatedIdentity(any(), any(), any(), any());
         verify(admin, never()).deleteUser(any(), any(), any());
     }
 
     @Test
     void linkNeedsTheAccountsToken() throws Exception {
-        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link"))
+        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link", "provider", "google"))
                 .andExpect(status().isUnauthorized());
         verifyNoInteractions(keycloak, admin);
     }
@@ -430,9 +563,49 @@ class IdentityMethodsControllerTest {
         signedIn("todogi", CAN);
         when(keycloak.token(eq("todogi"), any())).thenThrow(feign(400, "{\"error\":\"invalid_grant\"}"));
 
-        social("/auth/todogi/social", Map.of("code", "old", "redirectUri", "todogi://auth", "mode", "link"))
+        social("/auth/todogi/social", Map.of("code", "old", "redirectUri", "todogi://auth", "mode", "link", "provider", "google"))
                 .andExpect(status().isUnauthorized());
         assertThat(count("todogi", "link", "invalid")).isEqualTo(1);
+    }
+
+    /* ======================= rate limits (k4) ======================= */
+
+    @Test
+    void identitiesAreRateLimitedPerUser() throws Exception {
+        signedIn("todogi", CAN);
+        for (int i = 0; i < IdentityMethodsService.LIST_PER_USER.max(); i++) {
+            mvc.perform(get("/auth/todogi/identities")).andExpect(status().isOk());
+        }
+        mvc.perform(get("/auth/todogi/identities"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.error.code").value("rate_limited"));
+        for (int i = 0; i < IdentityMethodsService.UNLINK_PER_USER.max(); i++) {
+            mvc.perform(delete("/auth/todogi/identities/apple")).andExpect(status().isNoContent());
+        }
+        mvc.perform(delete("/auth/todogi/identities/apple")).andExpect(status().isTooManyRequests());
+        assertThat(count("todogi", "list", "rate_limited")).isEqualTo(1);
+        assertThat(count("todogi", "unlink", "rate_limited")).isEqualTo(1);
+
+        // per user: another account is not affected; the window passes
+        signedIn("todogi", AYSE);
+        when(admin.getCredentials("todogi", AYSE, ADMIN)).thenReturn(List.of(password()));
+        when(admin.getFederatedIdentities("todogi", AYSE, ADMIN)).thenReturn(List.of());
+        mvc.perform(get("/auth/todogi/identities")).andExpect(status().isOk());
+        signedIn("todogi", CAN);
+        clock.now = clock.now.plus(Duration.ofMinutes(11));
+        mvc.perform(get("/auth/todogi/identities")).andExpect(status().isOk());
+    }
+
+    /** k6: a known path with the wrong method is 405 with Allow (was 500). */
+    @Test
+    void wrongMethodIs405() throws Exception {
+        signedIn("todogi", CAN);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/auth/todogi/identities"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("Allow", org.hamcrest.Matchers.containsString("GET")))
+                .andExpect(jsonPath("$.error.code").value("method_not_allowed"));
+        mvc.perform(get("/auth/todogi/social"))
+                .andExpect(status().isMethodNotAllowed());
     }
 
     /* ======================= helpers ======================= */
@@ -442,15 +615,24 @@ class IdentityMethodsControllerTest {
         verify(admin, never()).logoutUser(any(), any(), any());
         verify(admin, never()).updateUser(any(), any(), any(), any());
         verify(admin, never()).removeFederatedIdentity(eq("todogi"), eq(CAN), any(), any());
+        verify(admin, never()).deleteSession(any(), eq("sid-can"), org.mockito.ArgumentMatchers.anyBoolean(), any());
     }
 
-    private void newBrokerUser(String id, String email, int sessions) {
-        user(id, email, true, clock.instant().minusSeconds(30));
-        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(id));
+    /** A Google-only user created {@code secondsBefore} the sign-in whose code the link presents. */
+    private void newBrokerUser(String id, String email, List<String> sessions, int secondsBefore) {
+        Instant signIn = clock.instant().minusSeconds(1);
+        user(id, email, true, signIn.minusSeconds(secondsBefore));
+        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(id, "google", signIn, "sid-new"));
         when(admin.getFederatedIdentities("todogi", id, ADMIN)).thenReturn(List.of(link("google", email)));
         when(admin.getCredentials("todogi", id, ADMIN)).thenReturn(List.of());
-        when(admin.getUserSessions("todogi", id, ADMIN)).thenReturn(java.util.stream.IntStream.range(0, sessions)
-                .mapToObj(i -> new KeycloakUserSessionDto("s" + i, clock.millis(), clock.millis())).toList());
+        when(admin.getUserSessions("todogi", id, ADMIN)).thenReturn(sessions.stream()
+                .map(sid -> new KeycloakUserSessionDto(sid, clock.millis(), clock.millis())).toList());
+    }
+
+    private void assertInUse() throws Exception {
+        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "mode", "link", "provider", "google"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("identity_in_use"));
     }
 
     private void user(String id, String email, boolean verified, Instant created) {
@@ -473,6 +655,19 @@ class IdentityMethodsControllerTest {
     private static TokenResponseDto tokens(String subject) {
         String access = new PlainJWT(new JWTClaimsSet.Builder().subject(subject).build()).serialize();
         return new TokenResponseDto(access, "refresh-" + subject, 300, 1800, "Bearer", "openid email profile");
+    }
+
+    /** Access token as Keycloak issues it after a provider sign-in (talay-identity identity_provider claim). */
+    private static TokenResponseDto tokens(String subject, String provider, Instant authTime, String sid) {
+        JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder().subject(subject).claim("sid", sid);
+        if (provider != null) {
+            claims.claim("identity_provider", provider);
+        }
+        if (authTime != null) {
+            claims.claim("auth_time", authTime.getEpochSecond());
+        }
+        return new TokenResponseDto(new PlainJWT(claims.build()).serialize(), "refresh-" + subject, 300, 1800, "Bearer",
+                "openid email profile");
     }
 
     private static KeycloakCredentialDto password() {

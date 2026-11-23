@@ -122,13 +122,20 @@ public class AuthController {
     https://auth.cantalay.com/realms/<realm>/protocol/openid-connect/auth
     ?client_id=<realm client>&response_type=code&scope=openid%20profile%20email&
     redirect_uri=<app>://callback&kc_idp_hint=google
-    and posts the returned code here. With identity methods on, mode=link (and the account's Bearer token) adds the
-    provider to the signed-in account instead (IdentityMethodsService).
+    and posts the returned code here (with provider=google). With identity methods on, mode=link (and the account's
+    Bearer token) adds the provider to the signed-in account instead (IdentityMethodsService). When Keycloak refuses the
+    sign-in the redirect has error/error_description instead of a code; posting those gives the translated error
+    (409 account_exists_unverified when an account with the address exists but is not confirmed).
      */
     @PostMapping({"/social", "/{realm}/social"})
     public TokenResponseDto socialLogin(@PathVariable(required = false) String realm,
                                         @Valid @RequestBody SocialLoginRequest request) {
         RealmConfig config = realms.resolve(realm);
+        if (request.isCallbackError()) {
+            // Keycloak refused the sign-in (no code): e.g. error_description=account_exists_unverified → 409
+            throw identityMethods != null ? identityMethods.callbackError(config, request)
+                    : IdentityMethodsService.translateCallbackError(request);
+        }
         if (identityMethods != null) {
             log.info("Social {} attempt in realm {}", "link".equals(request.mode()) ? "link" : "login", config.name());
             return identityMethods.social(config, bearerToken(), request);

@@ -344,6 +344,17 @@ public class AccountActionService implements RegistrationHook {
         } catch (FeignException e) {
             log.warn("Password reset in realm {}: clearing lockout of user {} failed: HTTP {}", realm.name(), userId, e.status());
         }
+        // The link came to the address and whoever followed it replaced the password and ended every other session:
+        // the address is proven and the account is theirs. Social sign-in (Keycloak links only confirmed accounts) then
+        // works; not while an old session may still live.
+        if (sessionsEnded && !Boolean.TRUE.equals(target.user().emailVerified())) {
+            try {
+                admin.updateUser(realm.name(), userId, bearer, Map.of("emailVerified", true));
+            } catch (FeignException e) {
+                log.warn("Password reset in realm {}: confirming the email of user {} failed: HTTP {}", realm.name(), userId,
+                        e.status());
+            }
+        }
         log.info("Password reset in realm {} for user {} (sessions ended: {})", realm.name(), userId, sessionsEnded);
         return new ResetOutcome(target.user(), sessionsEnded);
     }

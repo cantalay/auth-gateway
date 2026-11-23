@@ -38,8 +38,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Sign-in methods (ToDoGi İP-06 §2.9, criteria 15–17) end to end against a real Keycloak. A second realm,
  * {@code fakegoogle}, stands in for Google: realm {@code todogi} brokers it as an OIDC identity provider with the alias
- * {@code google} and the first broker login flow of talay-identity ({@code social-first-login}: create the user if
- * unique, otherwise link the account with the same email automatically). The test drives the browser part of the code
+ * {@code google} with the first broker login flow talay-identity had before talay-keycloak-providers
+ * {@code idp-auto-link-verified-only} ({@code social-first-login} with Keycloak's {@code idp-auto-link}: link the account
+ * with the same email without any check). That is the worst case the gateway's second line is for: the gateway must
+ * refuse what such a Keycloak lets through. The {@code auth} client carries talay-identity's {@code identity_provider}
+ * user session note claim. The test drives the browser part of the code
  * flow ({@code kc_idp_hint=google} → fake Google's login form → redirect to the app with a code) with an HTTP client, then
  * posts the code to the gateway like the app does. Nothing here talks to a live system.
  */
@@ -153,7 +156,7 @@ class IdentityMethodsIT {
         String ayse = subject(ayseSession);
 
         HttpResponse<String> inUse = gateway("POST", "/auth/todogi/social", canBearer, Map.of("code", googleCode(ayseEmail).code(),
-                "redirectUri", REDIRECT, "mode", "link"));
+                "redirectUri", REDIRECT, "mode", "link", "provider", "google"));
         assertThat(errorCode(inUse, 409)).isEqualTo("identity_in_use");
         assertThat(inUse.body()).doesNotContain("access_token");
         assertThat(adminGet("/admin/realms/todogi/users/" + ayse).get("id").asString()).isEqualTo(ayse); // not deleted
@@ -167,7 +170,7 @@ class IdentityMethodsIT {
         adminPost("/admin/realms/todogi/users/" + berta + "/federated-identity/google",
                 Map.of("identityProvider", "google", "userId", bertaGoogle, "userName", bertaEmail));
         assertThat(errorCode(gateway("POST", "/auth/todogi/social", canBearer, Map.of("code", googleCode(bertaEmail).code(),
-                "redirectUri", REDIRECT, "mode", "link")), 409)).isEqualTo("identity_in_use");
+                "redirectUri", REDIRECT, "mode", "link", "provider", "google")), 409)).isEqualTo("identity_in_use");
         assertThat(adminGetArray("/admin/realms/todogi/users/" + berta + "/federated-identity")).hasSize(1);
         assertThat(adminGetArray("/admin/realms/todogi/users/" + berta + "/sessions")).isEmpty(); // the link's session ended
 
@@ -175,7 +178,7 @@ class IdentityMethodsIT {
         String otherEmail = newEmail();
         createUser("fakegoogle", otherEmail, true, GOOGLE_PASSWORD);
         HttpResponse<String> mismatch = gateway("POST", "/auth/todogi/social", canBearer, Map.of("code",
-                googleCode(otherEmail).code(), "redirectUri", REDIRECT, "mode", "link"));
+                googleCode(otherEmail).code(), "redirectUri", REDIRECT, "mode", "link", "provider", "google"));
         assertThat(errorCode(mismatch, 409)).isEqualTo("identity_mismatch");
         assertThat(adminGetArray("/admin/realms/todogi/users?exact=true&email=" + enc(otherEmail))).isEmpty();
 
@@ -190,31 +193,68 @@ class IdentityMethodsIT {
                 ayseSession.get("access_token").asString(), canEmail, ayseEmail, otherEmail);
     }
 
-    /** Linking the account's own address: same user, 200 with the new session; the provider confirms the address. */
+    /** Linking the account's own address: same user, 200 with the new session; then Google signs in to it. */
     @Test
     void linkingTheAccountsOwnGoogle() throws Exception {
         String email = newEmail();
-        String id = createUser("todogi", email, false, PASSWORD);
+        String id = createUser("todogi", email, true, PASSWORD);
         createUser("fakegoogle", email, true, GOOGLE_PASSWORD);
         String bearer = accessToken(json(gateway("POST", "/auth/todogi/login", null, Map.of("email", email, "password", PASSWORD)), 200));
 
         JsonNode linked = json(gateway("POST", "/auth/todogi/social", bearer, Map.of("code", googleCode(email).code(),
-                "redirectUri", REDIRECT, "mode", "link")), 200);
+                "redirectUri", REDIRECT, "mode", "link", "provider", "google")), 200);
         assertThat(subject(linked)).isEqualTo(id);
+        assertThat(claim(linked, "identity_provider")).isEqualTo("google"); // talay-identity mapper
         JsonNode identities = json(gateway("GET", "/auth/todogi/identities", bearer, null), 200);
         assertThat(identities.get("password").asBoolean()).isTrue();
         assertThat(identities.get("providers").get(0).get("alias").asString()).isEqualTo("google");
-        assertThat(adminGet("/admin/realms/todogi/users/" + id).get("emailVerified").asBoolean()).isTrue();
 
         // from now on Google signs in to the same account
         JsonNode viaGoogle = json(gateway("POST", "/auth/todogi/social", null, Map.of("code", googleCode(email).code(),
-                "redirectUri", REDIRECT)), 200);
+                "redirectUri", REDIRECT, "provider", "google")), 200);
         assertThat(subject(viaGoogle)).isEqualTo(id);
     }
 
     /**
+     * K1 (review): an attacker registers the victim's address with a password (unconfirmed). The victim signs in with
+     * Google and this Keycloak links Google to the attacker's account; the gateway refuses. The attacker then presents a
+     * code of his own password session as a "link": it proves no Google sign-in, so nothing is linked or confirmed, and
+     * the victim's Google sign-in keeps being refused. Linking never confirms an email.
+     */
+    @Test
+    void linkingDoesNotConfirmTheEmail(CapturedOutput output) throws Exception {
+        String victim = newEmail();
+        String account = createUser("todogi", victim, false, PASSWORD); // the attacker's
+        createUser("fakegoogle", victim, true, GOOGLE_PASSWORD);
+        String attacker = accessToken(json(gateway("POST", "/auth/todogi/login", null, Map.of("email", victim, "password", PASSWORD)), 200));
+
+        assertThat(errorCode(gateway("POST", "/auth/todogi/social", null, Map.of("code", googleCode(victim).code(),
+                "redirectUri", REDIRECT, "provider", "google")), 409)).isEqualTo("account_exists_unverified");
+        assertThat(adminGetArray("/admin/realms/todogi/users/" + account + "/federated-identity")).hasSize(1); // Keycloak's link
+
+        BrokerResult passwordCode = passwordCode(victim, PASSWORD);
+        HttpResponse<String> race = gateway("POST", "/auth/todogi/social", attacker, Map.of("code", passwordCode.code(),
+                "redirectUri", REDIRECT, "mode", "link", "provider", "google"));
+        assertThat(errorCode(race, 409)).isEqualTo("identity_unproven");
+        assertThat(race.body()).doesNotContain("access_token");
+        assertThat(adminGet("/admin/realms/todogi/users/" + account).get("emailVerified").asBoolean()).isFalse();
+
+        // the attacker's own linking with the victim's Google is impossible without the victim's Google sign-in; and
+        // the victim's next sign-in is still refused
+        assertThat(errorCode(gateway("POST", "/auth/todogi/social", null, Map.of("code", googleCode(victim).code(),
+                "redirectUri", REDIRECT, "provider", "google")), 409)).isEqualTo("account_exists_unverified");
+        // an unconfirmed account linking its own Google (this Keycloak links): linked, but not confirmed
+        JsonNode own = json(gateway("POST", "/auth/todogi/social", attacker, Map.of("code", googleCode(victim).code(),
+                "redirectUri", REDIRECT, "mode", "link", "provider", "google")), 200);
+        assertThat(subject(own)).isEqualTo(account);
+        assertThat(adminGet("/admin/realms/todogi/users/" + account).get("emailVerified").asBoolean()).isFalse();
+        assertNoSecretsLogged(output, attacker, passwordCode.code(), PASSWORD);
+    }
+
+    /**
      * Criterion 17: Google sign-in with the address of a password account whose email is not confirmed → 409
-     * account_exists_unverified, no second user, no link left; with a confirmed address the same user signs in.
+     * account_exists_unverified, no second user, no session left (Keycloak's link stays: Ö3, the gateway does not
+     * touch links); with a confirmed address the same user signs in.
      * <p>
      * Observed Keycloak behavior (26.7.3, talay-identity social-first-login): Keycloak does not refuse — the automatic
      * link step links Google to the unconfirmed account and the browser comes back to the app with a code (no
@@ -237,7 +277,7 @@ class IdentityMethodsIT {
         assertThat(JSON.readTree(refused.body()).get("error").get("email").asString()).isEqualTo(email);
         assertThat(refused.body()).doesNotContain("access_token");
         assertThat(adminGetArray("/admin/realms/todogi/users?exact=true&email=" + enc(email))).hasSize(1);
-        assertThat(adminGetArray("/admin/realms/todogi/users/" + id + "/federated-identity")).isEmpty();
+        assertThat(adminGetArray("/admin/realms/todogi/users/" + id + "/federated-identity")).hasSize(1);
         assertThat(adminGetArray("/admin/realms/todogi/users/" + id + "/sessions")).isEmpty();
         assertThat(adminGet("/admin/realms/todogi/users/" + id).get("emailVerified").asBoolean()).isFalse();
         // the way out the app offers: password sign-in, then link from the profile
@@ -284,6 +324,82 @@ class IdentityMethodsIT {
         assertThat(gateway("GET", "/auth/vitafinder/me", vitafinder, null).statusCode()).isEqualTo(200);
     }
 
+    /**
+     * O1 (review): a refused sign-in that asked for {@code offline_access} leaves neither the online session (the
+     * browser's SSO cookie) nor the offline one; the same browser then gets no code without signing in again.
+     */
+    @Test
+    void refusedOfflineSignInLeavesNoSsoSession() throws Exception {
+        String email = newEmail();
+        String id = createUser("todogi", email, false, PASSWORD);
+        createUser("fakegoogle", email, true, GOOGLE_PASSWORD);
+
+        CookieJar browser = new CookieJar();
+        BrokerResult result = googleCode(email, "openid email profile offline_access", browser, null);
+        assertThat(result.code()).isNotBlank();
+        assertThat(errorCode(gateway("POST", "/auth/todogi/social", null, Map.of("code", result.code(), "redirectUri", REDIRECT,
+                "provider", "google")), 409)).isEqualTo("account_exists_unverified");
+        assertThat(adminGetArray("/admin/realms/todogi/users/" + id + "/sessions")).isEmpty();
+        assertThat(adminGetArray("/admin/realms/todogi/users/" + id + "/offline-sessions/" + clientUuid("auth"))).isEmpty();
+        BrokerResult again = googleCode(email, "openid email profile", browser, "none");
+        assertThat(again.code()).isNull();
+        assertThat(again.error()).isEqualTo("login_required");
+    }
+
+    /**
+     * O1 (review), what Keycloak 26.7.3 does: once a code with {@code offline_access} is exchanged only the offline
+     * session is left (no online session, so no SSO cookie that would sign the browser in again), and logging out with
+     * the offline refresh token ends it. The gateway still ends both by {@code sid}.
+     */
+    @Test
+    void offlineSignInLeavesNoSsoSessionAfterTheExchange() throws Exception {
+        String email = newEmail();
+        createUser("fakegoogle", email, true, GOOGLE_PASSWORD);
+        CookieJar browser = new CookieJar();
+        BrokerResult result = googleCode(email, "openid email profile offline_access", browser, null);
+        JsonNode tokens = keycloakToken(Map.of("grant_type", "authorization_code", "client_id", "auth", "code", result.code(),
+                "redirect_uri", REDIRECT));
+        String userId = subject(tokens);
+        assertThat(adminGetArray("/admin/realms/todogi/users/" + userId + "/sessions")).isEmpty();
+        assertThat(adminGetArray("/admin/realms/todogi/users/" + userId + "/offline-sessions/" + clientUuid("auth"))).hasSize(1);
+        assertThat(googleCode(email, "openid email profile", browser, "none").error()).isEqualTo("login_required");
+
+        HttpResponse<String> logout = HTTP.send(HttpRequest.newBuilder(URI.create(keycloakUrl() + "/realms/todogi/protocol/openid-connect/logout"))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString(formBody(Map.of("client_id", "auth",
+                        "refresh_token", tokens.get("refresh_token").asString())))).build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(logout.statusCode()).isEqualTo(204);
+        assertThat(adminGetArray("/admin/realms/todogi/users/" + userId + "/offline-sessions/" + clientUuid("auth"))).isEmpty();
+    }
+
+    /** Keycloak's refusal (talay-keycloak-providers) reaches the app as error=…; the gateway translates it in every realm. */
+    @Test
+    void keycloaksRefusalIsTranslated() throws Exception {
+        for (String realm : List.of("todogi", "vitafinder")) {
+            HttpResponse<String> refused = gateway("POST", "/auth/" + realm + "/social", null, Map.of("error", "access_denied",
+                    "errorDescription", "account_exists_unverified", "redirectUri", REDIRECT));
+            assertThat(errorCode(refused, 409)).isEqualTo("account_exists_unverified");
+            assertThat(errorCode(gateway("POST", "/auth/" + realm + "/social", null, Map.of("error", "access_denied",
+                    "redirectUri", REDIRECT)), 400)).isEqualTo("social_cancelled");
+        }
+        // k6: wrong method on a known path
+        HttpResponse<String> wrong = gateway("GET", "/auth/todogi/social", null, null);
+        assertThat(errorCode(wrong, 405)).isEqualTo("method_not_allowed");
+        assertThat(wrong.headers().firstValue("Allow")).hasValue("POST");
+    }
+
+    /** O3 (review): an ID token of the realm is not an access token; the gateway does not accept it as Bearer. */
+    @Test
+    void idTokenIsNoBearer() throws Exception {
+        String email = newEmail();
+        createUser("todogi", email, true, PASSWORD);
+        JsonNode tokens = keycloakToken(Map.of("grant_type", "password", "client_id", "auth", "username", email,
+                "password", PASSWORD, "scope", "openid email profile"));
+        assertThat(gateway("GET", "/auth/todogi/identities", tokens.get("access_token").asString(), null).statusCode()).isEqualTo(200);
+        assertThat(gateway("GET", "/auth/todogi/identities", tokens.get("id_token").asString(), null).statusCode()).isEqualTo(401);
+        assertThat(gateway("DELETE", "/auth/todogi/me", tokens.get("id_token").asString(), null).statusCode()).isEqualTo(401);
+    }
+
     /* ======================= the browser part of the Google sign-in ======================= */
 
     /** Where the code flow ended: the app's redirect with a {@code code} or an {@code error}. */
@@ -295,9 +411,23 @@ class IdentityMethodsIT {
      * in on fake Google's form and follows the redirects back to {@link #REDIRECT}.
      */
     private BrokerResult googleCode(String googleEmail) throws Exception {
-        CookieJar cookies = new CookieJar();
+        return googleCode(googleEmail, "openid email profile", new CookieJar(), null);
+    }
+
+    /** @param prompt {@code none}: only what the browser's SSO session gives, no form */
+    private BrokerResult googleCode(String googleEmail, String scope, CookieJar cookies, String prompt) throws Exception {
+        return browserCode("&kc_idp_hint=google" + (prompt == null ? "" : "&prompt=" + prompt), scope, cookies, googleEmail,
+                GOOGLE_PASSWORD);
+    }
+
+    /** A code of a password sign-in on Keycloak's own login form (no provider): what an attacker can get for his account. */
+    private BrokerResult passwordCode(String username, String password) throws Exception {
+        return browserCode("", "openid email profile", new CookieJar(), username, password);
+    }
+
+    private BrokerResult browserCode(String extra, String scope, CookieJar cookies, String username, String password) throws Exception {
         URI next = URI.create(keycloakUrl() + "/realms/todogi/protocol/openid-connect/auth?client_id=auth&response_type=code"
-                + "&scope=" + enc("openid email profile") + "&redirect_uri=" + enc(REDIRECT) + "&kc_idp_hint=google"
+                + "&scope=" + enc(scope) + "&redirect_uri=" + enc(REDIRECT) + extra
                 + "&state=" + UUID.randomUUID() + "&nonce=" + UUID.randomUUID());
         HttpRequest request = HttpRequest.newBuilder(next).GET().build();
         for (int hop = 0; hop < 25; hop++) {
@@ -319,8 +449,8 @@ class IdentityMethodsIT {
                 next = URI.create(form.group(1).replace("&amp;", "&"));
                 request = HttpRequest.newBuilder(next)
                         .header("Content-Type", "application/x-www-form-urlencoded")
-                        .POST(HttpRequest.BodyPublishers.ofString(formBody(Map.of("username", googleEmail,
-                                "password", GOOGLE_PASSWORD, "credentialId", ""))))
+                        .POST(HttpRequest.BodyPublishers.ofString(formBody(Map.of("username", username,
+                                "password", password, "credentialId", ""))))
                         .build();
                 continue;
             }
@@ -412,6 +542,24 @@ class IdentityMethodsIT {
         provider.put("firstBrokerLoginFlowAlias", "social-first-login");
         provider.put("config", config);
         adminPost("/admin/realms/todogi/identity-provider/instances", provider);
+        // talay-identity social.tf: identity_provider user session note claim on the gateway client
+        adminPost("/admin/realms/todogi/clients/" + clientUuid("auth") + "/protocol-mappers/models", Map.of(
+                "name", "identity-provider", "protocol", "openid-connect", "protocolMapper", "oidc-usersessionmodel-note-mapper",
+                "config", Map.of("user.session.note", "identity_provider", "claim.name", "identity_provider",
+                        "jsonType.label", "String", "access.token.claim", "true", "id.token.claim", "false",
+                        "introspection.token.claim", "true")));
+    }
+
+    private static String clientUuid(String clientId) throws Exception {
+        return adminGetArray("/admin/realms/todogi/clients?clientId=" + enc(clientId)).get(0).get("id").asString();
+    }
+
+    private static JsonNode keycloakToken(Map<String, String> form) throws Exception {
+        HttpResponse<String> response = HTTP.send(HttpRequest.newBuilder(URI.create(keycloakUrl() + "/realms/todogi/protocol/openid-connect/token"))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString(formBody(form))).build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        return JSON.readTree(response.body());
     }
 
     /* ======================= helpers ======================= */
@@ -522,6 +670,11 @@ class IdentityMethodsIT {
 
     private static String accessToken(JsonNode session) {
         return session.get("access_token").asString();
+    }
+
+    private static String claim(JsonNode session, String name) {
+        JsonNode value = JSON.readTree(Base64.getUrlDecoder().decode(accessToken(session).split("\\.")[1])).get(name);
+        return value == null ? null : value.asString();
     }
 
     private static String subject(JsonNode session) {
