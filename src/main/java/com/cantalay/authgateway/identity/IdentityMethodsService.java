@@ -83,6 +83,8 @@ public class IdentityMethodsService {
     static final String MODE_LINK = "link";
 
     private static final Logger log = LoggerFactory.getLogger(IdentityMethodsService.class);
+    /** {@link #justCreated}: how recent the account must be to count as created by this sign-in. */
+    static final Duration NEW_ACCOUNT_WINDOW = Duration.ofMinutes(10);
 
     private final AuthAdminService adminService;
     private final AuthService authService;
@@ -90,6 +92,8 @@ public class IdentityMethodsService {
     private final MeterRegistry meters;
     private final Clock clock;
     private final RateLimiter limiter;
+    /** Called once a social sign-in has just created the account (welcome email); optional. */
+    private SocialSignupHook signupHook;
     /** One removal at a time per user, so two parallel removals cannot take away the last two methods. */
     private final ReentrantLock[] userLocks = new ReentrantLock[LOCK_STRIPES];
 
@@ -110,6 +114,20 @@ public class IdentityMethodsService {
     public IdentityMethodsService(AuthAdminService adminService, AuthService authService, KeycloakAdminClient admin,
                                   MeterRegistry meters, Clock clock) {
         this(adminService, authService, admin, meters, clock, new RateLimiter(clock));
+    }
+
+    @Autowired(required = false)
+    public void setSignupHook(SocialSignupHook signupHook) {
+        this.signupHook = signupHook;
+    }
+
+    /**
+     * Keycloak created the account during this sign-in (first broker login): created moments ago. The window covers the
+     * provider round trip (Apple / Google consent) and clock skew; a later sign-in finds an older account.
+     */
+    boolean justCreated(KeycloakUserDto user) {
+        Long created = user == null ? null : user.createdTimestamp();
+        return created != null && clock.millis() - created <= NEW_ACCOUNT_WINDOW.toMillis();
     }
 
     /* ======================= identities ======================= */
@@ -237,6 +255,9 @@ public class IdentityMethodsService {
                 log.info("Social sign-in in realm {} refused: account {} ({}) has a password and an unconfirmed email",
                         realm.name(), signIn.subject(), maskEmail(user.email()));
                 throw new BaseAuthException(AuthError.ACCOUNT_EXISTS_UNVERIFIED, null, user.email());
+            }
+            if (signupHook != null && justCreated(user)) {
+                signupHook.accountCreated(realm, user);
             }
         } catch (FeignException e) {
             // the account could not be checked: no tokens for it

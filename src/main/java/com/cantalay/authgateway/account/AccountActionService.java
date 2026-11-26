@@ -67,7 +67,7 @@ import static com.cantalay.authgateway.realm.KeycloakErrors.maskEmail;
  * Metric: {@code auth_gateway_action_requests_total{realm, action, result}}.
  */
 @Service
-public class AccountActionService implements RegistrationHook {
+public class AccountActionService implements RegistrationHook, com.cantalay.authgateway.identity.SocialSignupHook {
 
     static final RateLimiter.Limit FORGOT_PER_EMAIL = new RateLimiter.Limit(3, Duration.ofHours(1));
     static final RateLimiter.Limit FORGOT_PER_IP = new RateLimiter.Limit(10, Duration.ofHours(1));
@@ -105,6 +105,9 @@ public class AccountActionService implements RegistrationHook {
     /** One password reset / confirmation at a time per user: the fingerprint is checked again under the lock. */
     private final ReentrantLock[] userLocks = new ReentrantLock[LOCK_STRIPES];
     private final Map<String, AtomicInteger> degraded = new ConcurrentHashMap<>();
+    /** Accounts welcomed after a social sign-up (user id → when), so a quick second sign-in does not mail again. */
+    private final Map<String, Long> socialWelcomed = new ConcurrentHashMap<>();
+    private static final long SOCIAL_WELCOME_MEMORY_MS = 60L * 60 * 1000;
 
     public AccountActionService(AuthAdminService adminService,
                                 KeycloakClient keycloak,
@@ -598,6 +601,36 @@ public class AccountActionService implements RegistrationHook {
             // No name: whoever registers chooses it, and the email goes to an address nobody has confirmed yet.
             tasks.execute(() -> mail.send(realm.name(), MailTemplate.WELCOME, to, language, Map.of(),
                     emptyToNull(config.getAppUrl()), extra));
+        }
+    }
+
+    /**
+     * Welcome email for an account a Google / Apple sign-in has just created (no password registration, so
+     * {@link #afterRegistration} never ran). Only where the realm opts in ({@code socialWelcome}); once per account per
+     * gateway process. The provider vouched for the address: no verification paragraph, no name (as at registration).
+     */
+    @Override
+    public void accountCreated(RealmConfig realm, KeycloakUserDto user) {
+        try {
+            if (user == null || !StringUtils.hasText(user.id()) || !StringUtils.hasText(user.email())
+                    || !mail.isEnabled(realm.name())) {
+                return;
+            }
+            MailProperties.Realm config = mailProperties.realm(realm.name());
+            if (config == null || !Boolean.TRUE.equals(config.getSocialWelcome())) {
+                return;
+            }
+            long now = System.currentTimeMillis();
+            socialWelcomed.values().removeIf(at -> now - at > SOCIAL_WELCOME_MEMORY_MS);
+            if (socialWelcomed.putIfAbsent(user.id(), now) != null) {
+                return;
+            }
+            String language = language(config, null, user);
+            String to = user.email();
+            tasks.execute(() -> mail.send(realm.name(), MailTemplate.WELCOME, to, language, Map.of(),
+                    emptyToNull(config.getAppUrl()), List.of()));
+        } catch (RuntimeException e) {
+            log.error("Social welcome email in realm {} failed: {}", realm.name(), e.getClass().getSimpleName());
         }
     }
 

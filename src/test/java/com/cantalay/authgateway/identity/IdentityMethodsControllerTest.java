@@ -71,6 +71,7 @@ class IdentityMethodsControllerTest {
     private final AuthAdminService adminService = mock(AuthAdminService.class);
     private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
     private MockMvc mvc;
+    private IdentityMethodsService identity;
 
     @BeforeEach
     void setUp() {
@@ -86,7 +87,7 @@ class IdentityMethodsControllerTest {
                 properties);
 
         AuthService auth = new AuthService(adminService, keycloak, admin);
-        IdentityMethodsService identity = new IdentityMethodsService(adminService, auth, admin, meters, clock);
+        identity = new IdentityMethodsService(adminService, auth, admin, meters, clock);
         mvc = MockMvcBuilders.standaloneSetup(new AuthController(auth, realms, identity), new IdentityController(identity, realms))
                 .setControllerAdvice(new GlobalAuthExceptionHandler())
                 .setCustomArgumentResolvers(new AuthenticationPrincipalArgumentResolver())
@@ -255,6 +256,35 @@ class IdentityMethodsControllerTest {
         verify(admin, never()).removeFederatedIdentity(any(), any(), any(), any());
         verify(keycloak, never()).logout(any(), any());
         assertThat(count("todogi", "login", "ok")).isEqualTo(3);
+    }
+
+    /** 2026-11-26: Google / Apple sign-up sent no welcome email; the sign-up hook runs once, only for a new account. */
+    @Test
+    void socialSignUpCallsTheSignupHookOnlyForAJustCreatedAccount() throws Exception {
+        List<String> created = new java.util.ArrayList<>();
+        identity.setSignupHook((realm, u) -> created.add(realm.name() + ":" + u.id()));
+        user(NEW, "yeni@ornek.com", true, clock.now.minus(java.time.Duration.ofMinutes(1)));
+        when(admin.getCredentials("todogi", NEW, ADMIN)).thenReturn(List.of());
+        when(admin.getFederatedIdentities("todogi", NEW, ADMIN)).thenReturn(List.of(link("apple", "yeni@ornek.com")));
+        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(NEW));
+
+        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth", "provider", "apple"))
+                .andExpect(status().isOk());
+        assertThat(created).containsExactly("todogi:" + NEW);
+
+        // an account from before (CAN, created in January) signing in again: no hook
+        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(CAN));
+        when(admin.getFederatedIdentities("todogi", CAN, ADMIN)).thenReturn(List.of(link("google", "can@ornek.com")));
+        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth"))
+                .andExpect(status().isOk());
+        assertThat(created).containsExactly("todogi:" + NEW);
+
+        // the new account signing in again after the window: no hook either
+        clock.now = clock.now.plus(IdentityMethodsService.NEW_ACCOUNT_WINDOW);
+        when(keycloak.token(eq("todogi"), any())).thenReturn(tokens(NEW));
+        social("/auth/todogi/social", Map.of("code", "c", "redirectUri", "todogi://auth"))
+                .andExpect(status().isOk());
+        assertThat(created).containsExactly("todogi:" + NEW);
     }
 
     /**

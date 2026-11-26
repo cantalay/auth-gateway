@@ -64,6 +64,11 @@ public class MailProperties {
         private String defaultLocale;
         private String supportEmail;
         private Boolean resendVerification;
+        /**
+         * Welcome email also for an account a Google / Apple sign-in has just created
+         * (GATEWAY_MAIL_REALMS_&lt;REALM&gt;_SOCIALWELCOME). Off by default: apps that send their own welcome keep it off.
+         */
+        private Boolean socialWelcome;
 
         public String getFrom() { return from; }
         public void setFrom(String from) { this.from = from; }
@@ -89,6 +94,8 @@ public class MailProperties {
         public void setSupportEmail(String supportEmail) { this.supportEmail = supportEmail; }
         public Boolean getResendVerification() { return resendVerification; }
         public void setResendVerification(Boolean resendVerification) { this.resendVerification = resendVerification; }
+        public Boolean getSocialWelcome() { return socialWelcome; }
+        public void setSocialWelcome(Boolean socialWelcome) { this.socialWelcome = socialWelcome; }
 
         /** Default email language: {@code defaultLocale}, else the first configured locale, else Turkish. */
         public String effectiveDefaultLocale() {
